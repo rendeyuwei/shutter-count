@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="ShutterCount — 查看相机快门次数（静态 UI 原型）" />
+    <title>ShutterCount · UI Mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c0d0f;
+        --surface: #141619;
+        --surface-raised: #1b1e22;
+        --surface-soft: #23272c;
+        --text: #f4f3ef;
+        --text-muted: #a6a8a9;
+        --border: rgb(255 255 255 / 10%);
+        --border-strong: rgb(255 255 255 / 18%);
+        --accent: #efac4b;
+        --accent-hover: #f6bb63;
+        --accent-text: #1c1308;
+        --danger: #ff8f82;
+        --focus: #79baff;
+        --shadow: 0 24px 80px rgb(0 0 0 / 38%);
+        --radius-sm: 10px;
+        --radius: 16px;
+        --radius-lg: 24px;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--bg);
+        min-width: 320px;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100dvh;
+        color: var(--text);
+        font-size: 15px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        background:
+          radial-gradient(
+            circle at 12% -10%,
+            color-mix(in srgb, var(--accent) 9%, transparent),
+            transparent 28rem
+          ),
+          var(--bg);
+      }
+
+      button {
+        font: inherit;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      button:focus-visible,
+      a:focus-visible,
+      [role="tab"]:focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 3px;
+      }
+
+      .visually-hidden {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+      }
+
+      /* —— Mockup chrome (tabs for screenshotting) —— */
+      .mock-chrome {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px max(16px, env(safe-area-inset-right)) 12px
+          max(16px, env(safe-area-inset-left));
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+      }
+
+      .mock-chrome__label {
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .tabs__list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+      }
+
+      .tabs__trigger {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        min-height: 34px;
+        padding: 0 14px;
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 650;
+        cursor: pointer;
+        transition: background-color 0.16s, color 0.16s;
+      }
+
+      .tabs__trigger:hover {
+        color: var(--text);
+        background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+      }
+
+      .tabs__trigger[aria-selected="true"] {
+        background: var(--accent);
+        color: var(--accent-text);
+      }
+
+      .panel {
+        display: none;
+      }
+
+      .panel.is-active {
+        display: block;
+      }
+
+      /* —— Shared product UI (EasyPic-aligned) —— */
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 44px;
+        padding: 0 18px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        font-weight: 650;
+        cursor: pointer;
+        color: var(--text);
+        transition: background-color 0.16s, border-color 0.16s, color 0.16s,
+          transform 0.16s;
+      }
+
+      .button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      .button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+      }
+
+      .button--primary {
+        background: var(--accent);
+        color: var(--accent-text);
+      }
+
+      .button--primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+      }
+
+      .button--secondary {
+        border-color: var(--border);
+        background: var(--surface-soft);
+      }
+
+      .button--secondary:hover:not(:disabled) {
+        border-color: var(--border-strong);
+        background: color-mix(in srgb, var(--surface-soft) 75%, var(--text) 5%);
+      }
+
+      .upload-screen {
+        display: grid;
+        place-items: center;
+        min-height: calc(100dvh - 58px);
+        padding: max(48px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+          max(32px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+      }
+
+      .upload-card {
+        width: min(100%, 630px);
+        text-align: center;
+      }
+
+      .brand-mark {
+        display: inline-grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 13px;
+        background: var(--accent);
+        color: var(--accent-text);
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        box-shadow: 0 10px 35px color-mix(in srgb, var(--accent) 25%, transparent);
+      }
+
+      .eyebrow {
+        margin: 18px 0 8px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .upload-card h1 {
+        max-width: 560px;
+        margin: 0 auto;
+        font-size: clamp(32px, 6vw, 54px);
+        line-height: 1.08;
+        letter-spacing: -0.045em;
+      }
+
+      .upload-intro {
+        margin: 16px auto 30px;
+        color: var(--text-muted);
+        font-size: 16px;
+      }
+
+      .upload-dropzone {
+        display: grid;
+        place-items: center;
+        align-content: center;
+        gap: 11px;
+        min-height: 240px;
+        padding: 32px;
+        border: 1px dashed var(--border-strong);
+        border-radius: var(--radius-lg);
+        background: color-mix(in srgb, var(--surface) 88%, transparent);
+        box-shadow: inset 0 1px rgb(255 255 255 / 4%);
+        cursor: pointer;
+        transition: border-color 0.16s, background-color 0.16s, transform 0.16s;
+      }
+
+      .upload-dropzone:hover,
+      .upload-dropzone[data-dragging="true"] {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--surface) 84%, var(--accent) 7%);
+        transform: translateY(-2px);
+      }
+
+      .upload-dropzone[aria-busy="true"] {
+        cursor: progress;
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--surface) 84%, var(--accent) 7%);
+        pointer-events: none;
+      }
+
+      .upload-dropzone > svg {
+        width: 38px;
+        height: 38px;
+        color: var(--accent);
+      }
+
+      .upload-dropzone strong {
+        font-size: 18px;
+      }
+
+      .upload-dropzone > span {
+        color: var(--text-muted);
+      }
+
+      .privacy-note {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        margin: 18px 0 0;
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+
+      .privacy-note svg {
+        width: 15px;
+        height: 15px;
+        flex: none;
+      }
+
+      /* Result / warning states share upload-card layout */
+      .file-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 100%;
+        margin: 0 auto 22px;
+        padding: 8px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .file-chip svg {
+        width: 16px;
+        height: 16px;
+        color: var(--accent);
+        flex: none;
+      }
+
+      .file-chip__name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+        max-width: 42ch;
+      }
+
+      .result-card {
+        text-align: left;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .result-row {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .result-row:last-child {
+        border-bottom: 0;
+      }
+
+      .result-row__label {
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .result-row__value {
+        color: var(--text);
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        word-break: break-word;
+      }
+
+      .result-row--shutter .result-row__value {
+        color: var(--accent);
+        font-size: clamp(36px, 8vw, 52px);
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        line-height: 1.05;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .result-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 24px;
+      }
+
+      .warn-banner {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        text-align: left;
+        margin: 0 0 20px;
+        padding: 16px 18px;
+        border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+        border-radius: var(--radius);
+        background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .warn-banner svg {
+        width: 20px;
+        height: 20px;
+        flex: none;
+        margin-top: 1px;
+        color: var(--danger);
+      }
+
+      .warn-banner strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--danger);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .spinner {
+        width: 38px;
+        height: 38px;
+        border: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .loading-hint {
+        color: var(--accent);
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      @media (max-width: 480px) {
+        .result-row {
+          padding: 16px 18px;
+        }
+
+        .file-chip__name {
+          max-width: 28ch;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-chrome" role="navigation" aria-label="原型状态切换">
+      <span class="mock-chrome__label">ShutterCount · UI 原型</span>
+      <div class="tabs__list" role="tablist" aria-label="界面状态">
+        <button
+          type="button"
+          class="tabs__trigger"
+          role="tab"
+          id="tab-upload"
+          aria-controls="panel-upload"
+          aria-selected="true"
+          data-panel="upload"
+        >
+          上传
+        </button>
+        <button
+          type="button"
+          class="tabs__trigger"
+          role="tab"
+          id="tab-success"
+          aria-controls="panel-success"
+          aria-selected="false"
+          data-panel="success"
+        >
+          成功
+        </button>
+        <button
+          type="button"
+          class="tabs__trigger"
+          role="tab"
+          id="tab-fail"
+          aria-controls="panel-fail"
+          aria-selected="false"
+          data-panel="fail"
+        >
+          读不到
+        </button>
+        <button
+          type="button"
+          class="tabs__trigger"
+          role="tab"
+          id="tab-loading"
+          aria-controls="panel-loading"
+          aria-selected="false"
+          data-panel="loading"
+        >
+          解析中
+        </button>
+      </div>
+    </div>
+
+    <!-- 1. Upload (empty) -->
+    <section
+      class="panel is-active"
+      id="panel-upload"
+      role="tabpanel"
+      aria-labelledby="tab-upload"
+    >
+      <div class="upload-screen">
+        <div class="upload-card">
+          <div class="brand-mark" aria-hidden="true">SC</div>
+          <p class="eyebrow">ShutterCount</p>
+          <h1>查看相机快门次数</h1>
+          <p class="upload-intro">上传一张相机原图，读取机身与快门计数。</p>
+
+          <div
+            class="upload-dropzone"
+            role="button"
+            tabindex="0"
+            aria-label="点击或拖放原图到这里"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 16V4m0 0 4 4m-4-4-4 4"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M4 14v4.2A1.8 1.8 0 0 0 5.8 20h12.4a1.8 1.8 0 0 0 1.8-1.8V14"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+            </svg>
+            <strong>点击或拖放原图到这里</strong>
+            <span>支持 JPG、JPEG，建议相机直出原图</span>
+          </div>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 3 5 6.5v5.2c0 4.1 2.8 7.9 7 8.8 4.2-.9 7-4.7 7-8.8V6.5L12 3Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M9.5 12.2 11.2 14l3.5-3.8"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            图片仅临时解析，不长期保存
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Success -->
+    <section
+      class="panel"
+      id="panel-success"
+      role="tabpanel"
+      aria-labelledby="tab-success"
+      hidden
+    >
+      <div class="upload-screen">
+        <div class="upload-card">
+          <div class="brand-mark" aria-hidden="true">SC</div>
+          <p class="eyebrow">ShutterCount</p>
+          <h1>查看相机快门次数</h1>
+          <p class="upload-intro">已从原图中读取到机身与快门信息。</p>
+
+          <div class="file-chip" title="DSC_2480.JPG">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M7 3.8h6.2L19 9.6V20.2A1.8 1.8 0 0 1 17.2 22H7A1.8 1.8 0 0 1 5.2 20.2V5.6A1.8 1.8 0 0 1 7 3.8Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path d="M13 3.8V9h5.8" stroke="currentColor" stroke-width="1.6" />
+            </svg>
+            <span class="file-chip__name">DSC_2480.JPG</span>
+          </div>
+
+          <div class="result-card" aria-label="快门读取结果">
+            <div class="result-row">
+              <span class="result-row__label">机身型号</span>
+              <span class="result-row__value">Nikon Z6 II</span>
+            </div>
+            <div class="result-row result-row--shutter">
+              <span class="result-row__label">快门次数</span>
+              <span class="result-row__value">12,480</span>
+            </div>
+            <div class="result-row">
+              <span class="result-row__label">拍摄时间</span>
+              <span class="result-row__value">2025-11-03 14:22:08</span>
+            </div>
+          </div>
+
+          <div class="result-actions">
+            <button type="button" class="button button--primary">再查一张</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Cannot-read shutter count -->
+    <section
+      class="panel"
+      id="panel-fail"
+      role="tabpanel"
+      aria-labelledby="tab-fail"
+      hidden
+    >
+      <div class="upload-screen">
+        <div class="upload-card">
+          <div class="brand-mark" aria-hidden="true">SC</div>
+          <p class="eyebrow">ShutterCount</p>
+          <h1>查看相机快门次数</h1>
+          <p class="upload-intro">已解析元数据，但未能读到快门计数。</p>
+
+          <div class="file-chip" title="IMG_7021.JPG">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M7 3.8h6.2L19 9.6V20.2A1.8 1.8 0 0 1 17.2 22H7A1.8 1.8 0 0 1 5.2 20.2V5.6A1.8 1.8 0 0 1 7 3.8Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path d="M13 3.8V9h5.8" stroke="currentColor" stroke-width="1.6" />
+            </svg>
+            <span class="file-chip__name">IMG_7021.JPG</span>
+          </div>
+
+          <div class="warn-banner" role="status">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 9v4.5m0 3.2h.01M10.1 4.4 2.7 17.2A2.1 2.1 0 0 0 4.5 20.3h15a2.1 2.1 0 0 0 1.8-3.1L13.9 4.4a2.1 2.1 0 0 0-3.8 0Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <div>
+              <strong>未能读到快门次数</strong>
+              该型号原图可能不含快门信息，或请换一张相机直出的原图再试。
+            </div>
+          </div>
+
+          <div class="result-card" aria-label="已知元数据">
+            <div class="result-row">
+              <span class="result-row__label">机身型号</span>
+              <span class="result-row__value">Sony ILCE-7M4</span>
+            </div>
+            <div class="result-row">
+              <span class="result-row__label">拍摄时间</span>
+              <span class="result-row__value">2025-09-18 09:05:41</span>
+            </div>
+          </div>
+
+          <div class="result-actions">
+            <button type="button" class="button button--secondary">重新上传</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Loading (optional) -->
+    <section
+      class="panel"
+      id="panel-loading"
+      role="tabpanel"
+      aria-labelledby="tab-loading"
+      hidden
+    >
+      <div class="upload-screen">
+        <div class="upload-card">
+          <div class="brand-mark" aria-hidden="true">SC</div>
+          <p class="eyebrow">ShutterCount</p>
+          <h1>查看相机快门次数</h1>
+          <p class="upload-intro">上传一张相机原图，读取机身与快门计数。</p>
+
+          <div
+            class="upload-dropzone"
+            aria-busy="true"
+            aria-live="polite"
+            role="status"
+          >
+            <div class="spinner" aria-hidden="true"></div>
+            <strong class="loading-hint">正在解析原图…</strong>
+            <span>DSC_2480.JPG · 请稍候</span>
+          </div>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 3 5 6.5v5.2c0 4.1 2.8 7.9 7 8.8 4.2-.9 7-4.7 7-8.8V6.5L12 3Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M9.5 12.2 11.2 14l3.5-3.8"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            图片仅临时解析，不长期保存
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      (function () {
+        var triggers = document.querySelectorAll(".tabs__trigger");
+        var panels = {
+          upload: document.getElementById("panel-upload"),
+          success: document.getElementById("panel-success"),
+          fail: document.getElementById("panel-fail"),
+          loading: document.getElementById("panel-loading"),
+        };
+
+        function activate(name) {
+          Object.keys(panels).forEach(function (key) {
+            var panel = panels[key];
+            var on = key === name;
+            panel.classList.toggle("is-active", on);
+            panel.hidden = !on;
+          });
+          triggers.forEach(function (btn) {
+            var on = btn.getAttribute("data-panel") === name;
+            btn.setAttribute("aria-selected", on ? "true" : "false");
+          });
+          if (history.replaceState) {
+            history.replaceState(null, "", "#" + name);
+          }
+        }
+
+        triggers.forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            activate(btn.getAttribute("data-panel"));
+          });
+        });
+
+        var hash = (location.hash || "").replace(/^#/, "");
+        if (panels[hash]) {
+          activate(hash);
+        }
+      })();
+    </script>
+  </body>
+</html>
