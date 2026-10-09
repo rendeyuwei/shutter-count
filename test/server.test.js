@@ -92,12 +92,28 @@ test("GET /shutter -> 308 redirect to /shutter/", async () => {
   assert.equal(res.headers.location, "/shutter/");
 });
 
-test("GET /shutter/ -> 200 html", async () => {
+test("GET /shutter/ -> 200 html with the product title", async () => {
   const app = await makeApp();
   const res = await app.inject({ method: "GET", url: "/shutter/" });
   assert.equal(res.statusCode, 200);
   assert.match(res.headers["content-type"], /text\/html/);
-  assert.match(res.body, /TODO/);
+  assert.match(res.body, /查看相机快门次数/);
+});
+
+test("GET /shutter/app.js -> 200 javascript", async () => {
+  const app = await makeApp();
+  const res = await app.inject({ method: "GET", url: "/shutter/app.js" });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"], /javascript/);
+  assert.match(res.body, /api\/parse/);
+});
+
+test("GET /shutter/styles.css -> 200 css", async () => {
+  const app = await makeApp();
+  const res = await app.inject({ method: "GET", url: "/shutter/styles.css" });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"], /text\/css/);
+  assert.match(res.body, /--accent:\s*#efac4b/);
 });
 
 test("POST /shutter/api/parse with NikonD70.jpg -> 200 ok", async () => {
