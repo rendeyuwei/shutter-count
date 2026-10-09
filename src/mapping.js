@@ -124,11 +124,21 @@ function detectBrand(make) {
   return null;
 }
 
-/** Valid shutter count: finite integer > 0 (numeric strings accepted). */
+// Plausibility cap: no camera has actuated a shutter more than ~5M times, and
+// some MakerNotes report garbage in shutter tags (e.g. a Sony NEX-5N sample
+// with Sony:ShutterCount=5723156 and ShutterCount3=2488431957). Values above
+// the cap are ignored so the next candidate tag is tried.
+export const MAX_PLAUSIBLE_COUNT = 5_000_000;
+
+/**
+ * Valid shutter count: finite integer with 0 < n <= MAX_PLAUSIBLE_COUNT
+ * (numeric strings accepted). Anything else -> null (try next candidate).
+ */
 function validCount(value) {
   if (value === null || value === undefined || typeof value === "boolean") return null;
   const n = typeof value === "number" ? value : Number(String(value).trim());
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return null;
+  if (n > MAX_PLAUSIBLE_COUNT) return null;
   return n;
 }
 

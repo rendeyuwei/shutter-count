@@ -1,11 +1,19 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { buildApp, cleanupStaleTmpDirs } from "../src/server.js";
+import {
+  buildApp,
+  cleanupStaleTmpDirs,
+  parseTrustProxy,
+} from "../src/server.js";
 import { closeExifTool } from "../src/parse.js";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const FIXTURES = path.join(
   path.dirname(new URL(import.meta.url).pathname),
@@ -214,6 +222,110 @@ test("rate limit applies to /api/parse only (30/min)", async () => {
   // health is NOT rate limited
   const health = await app.inject({ method: "GET", url: "/shutter/api/health" });
   assert.equal(health.statusCode, 200);
+});
+
+test("parseTrustProxy: defaults to loopback, accepts true/false and IP/CIDR lists", () => {
+  assert.deepEqual(parseTrustProxy(undefined), ["127.0.0.1", "::1"]);
+  assert.deepEqual(parseTrustProxy(""), ["127.0.0.1", "::1"]);
+  assert.equal(parseTrustProxy("true"), true);
+  assert.equal(parseTrustProxy("false"), false);
+  assert.deepEqual(parseTrustProxy("127.0.0.1,::1"), ["127.0.0.1", "::1"]);
+  assert.deepEqual(parseTrustProxy(" 10.0.0.0/8 , 192.168.1.1 "), [
+    "10.0.0.0/8",
+    "192.168.1.1",
+  ]);
+});
+
+test("buildApp honors trustProxy option without breaking health", async () => {
+  const app = await makeApp({ trustProxy: "127.0.0.1,::1" });
+  const res = await app.inject({ method: "GET", url: "/shutter/api/health" });
+  assert.equal(res.statusCode, 200);
+});
+
+test("server starts and answers health when invoked via a symlinked path", async () => {
+  // Mirrors the deploy layout: /opt/shutter-count/current -> releases/<id>.
+  // Node resolves the main module's realpath, so the invokedDirectly check
+  // must realpath process.argv[1] or the server silently does nothing.
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "sc-symlink-"));
+  const link = path.join(tmp, "current");
+  await fsp.symlink(REPO_ROOT, link, "dir");
+
+  const port = 40000 + Math.floor(Math.random() * 10000); // 40000-49999
+  const child = spawn(
+    process.execPath,
+    [path.join(link, "src", "server.js")],
+    {
+      cwd: tmp,
+      detached: true, // own process group so we can kill exiftool children too
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: "127.0.0.1",
+        BASE_PATH: "/shutter",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    }
+  );
+  let stderr = "";
+  child.stderr.on("data", (d) => {
+    stderr += d;
+  });
+
+  const killChild = async () => {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // already gone
+      }
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+        resolve();
+      }, 5000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  };
+
+  try {
+    const url = `http://127.0.0.1:${port}/shutter/api/health`;
+    const deadline = Date.now() + 20000;
+    let ok = false;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        break; // server crashed / never started
+      }
+      try {
+        const res = await fetch(url);
+        if (res.status === 200) {
+          const body = await res.json();
+          assert.equal(body.status, "ok");
+          ok = true;
+          break;
+        }
+      } catch {
+        // not listening yet
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(
+      ok,
+      `server via symlink did not answer health with 200 (exit=${child.exitCode})${stderr ? `\nstderr: ${stderr.slice(0, 500)}` : ""}`
+    );
+  } finally {
+    await killChild();
+    await fsp.rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test("cleanupStaleTmpDirs removes only shuttercount-* dirs older than 10 min", async () => {

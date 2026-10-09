@@ -19,9 +19,28 @@ const TMP_PREFIX = "shuttercount-";
 const STALE_TMP_AGE_MS = 10 * 60 * 1000; // 10 minutes
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
 
-function envBool(value, fallback) {
-  if (value === undefined || value === null || value === "") return fallback;
-  return !["false", "0", "no", "off"].includes(String(value).toLowerCase());
+const DEFAULT_TRUST_PROXY = ["127.0.0.1", "::1"];
+
+/**
+ * Parse the TRUST_PROXY setting into a Fastify `trustProxy` value:
+ * - "true" -> true, "false" -> false
+ * - comma-separated IPs/CIDRs -> array (only those hops are trusted, so
+ *   remote clients cannot spoof X-Forwarded-For to dodge the rate limit)
+ * - unset/empty -> loopback-only default (nginx runs on the same host)
+ */
+export function parseTrustProxy(value) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return DEFAULT_TRUST_PROXY;
+  }
+  const s = String(value).trim();
+  const lower = s.toLowerCase();
+  if (lower === "true") return true;
+  if (lower === "false") return false;
+  const list = s
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x !== "");
+  return list.length > 0 ? list : DEFAULT_TRUST_PROXY;
 }
 
 /** Normalize a base path: leading slash, no trailing slash ("" for "/"). */
@@ -88,9 +107,8 @@ export function buildApp(opts = {}) {
   const maxUploadMb = Number(
     opts.maxUploadMb ?? process.env.MAX_UPLOAD_MB ?? 50
   );
-  const trustProxy = envBool(
-    opts.trustProxy ?? process.env.TRUST_PROXY,
-    true
+  const trustProxy = parseTrustProxy(
+    opts.trustProxy ?? process.env.TRUST_PROXY
   );
   const tmpRoot = opts.tmpRoot ?? os.tmpdir();
   const rateLimitMax = opts.rateLimitMax ?? 30;
@@ -291,8 +309,20 @@ async function main() {
   }
 }
 
-const invokedDirectly =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedDirectly) {
+// Node resolves the main module's realpath, so when started through a symlink
+// (e.g. /opt/shutter-count/current -> releases/<id>), process.argv[1] may be
+// the symlink path while import.meta.url is the realpath. Compare realpaths.
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  let entry;
+  try {
+    entry = pathToFileURL(fs.realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+  return import.meta.url === entry;
+}
+
+if (isInvokedDirectly()) {
   main();
 }

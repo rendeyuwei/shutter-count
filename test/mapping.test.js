@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { mapTags } from "../src/mapping.js";
+import { mapTags, MAX_PLAUSIBLE_COUNT } from "../src/mapping.js";
 
 test("Nikon: ShutterCount is used", () => {
   const r = mapTags({
@@ -198,6 +198,46 @@ test("invalid values (0, negative, non-numeric) are skipped; next candidate used
   assert.equal(r2.status, "ok");
   assert.equal(r2.shutterCount, 61);
   assert.equal(r2.shutterSource, "Sony:ShutterCount3");
+});
+
+test("plausibility cap: MAX_PLAUSIBLE_COUNT is 5,000,000", () => {
+  assert.equal(MAX_PLAUSIBLE_COUNT, 5_000_000);
+});
+
+test("Sony NEX-5N garbage values above the cap are all rejected -> no_shutter_field", () => {
+  // Real-world sample: Sony:ShutterCount=5723156 and ShutterCount3=2488431957
+  // are both garbage (above MAX_PLAUSIBLE_COUNT) and must be ignored.
+  const r = mapTags({
+    "IFD0:Make": "SONY",
+    "IFD0:Model": "NEX-5N",
+    "Sony:ShutterCount": 5723156,
+    "Sony:ShutterCount3": 2488431957,
+  });
+  assert.equal(r.status, "no_shutter_field");
+  assert.equal(r.shutterCount, null);
+  assert.equal(r.shutterSource, null);
+});
+
+test("over-cap ShutterCount is skipped; next plausible candidate is used", () => {
+  const r = mapTags({
+    "IFD0:Make": "SONY",
+    "IFD0:Model": "ILCE-7M4",
+    "Sony:ShutterCount": 9_000_000,
+    "Sony:ShutterCount2": 1200,
+  });
+  assert.equal(r.status, "ok");
+  assert.equal(r.shutterCount, 1200);
+  assert.equal(r.shutterSource, "Sony:ShutterCount2");
+});
+
+test("counts exactly at the cap are accepted", () => {
+  const r = mapTags({
+    "IFD0:Make": "NIKON CORPORATION",
+    "IFD0:Model": "NIKON D70",
+    "Nikon:ShutterCount": MAX_PLAUSIBLE_COUNT,
+  });
+  assert.equal(r.status, "ok");
+  assert.equal(r.shutterCount, MAX_PLAUSIBLE_COUNT);
 });
 
 test("model display: brand prefixing rules", () => {
