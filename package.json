@@ -1,0 +1,21 @@
+{
+  "name": "shutter-count",
+  "version": "1.0.0",
+  "description": "Upload a camera-original JPEG and read its shutter count (EXIF + MakerNotes via ExifTool).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^9.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/static": "^8.0.0",
+    "exiftool-vendored": "^28.0.0",
+    "fastify": "^5.0.0"
+  }
+}
