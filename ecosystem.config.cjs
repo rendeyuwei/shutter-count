@@ -4,7 +4,7 @@ module.exports = {
   apps: [
     {
       name: "shutter-count",
-      script: "src/server.js",
+      script: "bin/start.mjs",
       // Deploy layout: /opt/shutter-count/current -> releases/<id>.
       // SHUTTER_APP_DIR lets PM2 manage the process against the release dir
       // while the symlink flips underneath it.

@@ -323,6 +323,16 @@ function isInvokedDirectly() {
   return import.meta.url === entry;
 }
 
-if (isInvokedDirectly()) {
+// PM2 / some launchers may not satisfy the argv[1] realpath equality check
+// (e.g. when the script is loaded through a wrapper). Treat known process
+// managers as a direct start, and always allow an explicit override.
+function shouldListen() {
+  if (process.env.SHUTTER_NO_LISTEN === "1") return false;
+  if (process.env.SHUTTER_FORCE_LISTEN === "1") return true;
+  if (process.env.pm_id !== undefined || process.env.PM2_HOME) return true;
+  return isInvokedDirectly();
+}
+
+if (shouldListen()) {
   main();
 }
