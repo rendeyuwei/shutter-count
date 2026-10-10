@@ -107,11 +107,12 @@
 ## 如何预览 / 截图
 
 ```bash
-# 本机直接打开
-open /workspace/shutter-ui/index.html
-# 或任意静态服务器，例如：
-# python3 -m http.server 8765 --directory /workspace/shutter-ui
+npm ci
+npm run build
+npm start
 ```
 
-顶栏切换：**上传** / **成功** / **读不到** / **解析中**  
-也可用锚点：`#upload` `#success` `#fail` `#loading`
+使用实际页面预览：`http://127.0.0.1:3020/shutter/?demo#success`。
+支持 `#success`、`#fail`、`#error`、`#loading`；上传状态使用 `/shutter/`。
+原 `docs/prototype.html` 已退役，设计预览与生产页面共用 TypeScript 实现。
+开发时可另开 `npm run dev:web` 使用 Vite；真实原图上传需要后端同时运行。

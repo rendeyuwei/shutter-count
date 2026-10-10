@@ -18,16 +18,11 @@ public_url=$6
 [[ "$revision" =~ ^[a-f0-9]{40}$ ]] || die 'Expected a full commit SHA'
 [[ "$release_id" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ && "$release_id" == "$revision"-* ]] || die 'Invalid unique release ID'
 [[ -d "$root/releases" && ! -L "$root/releases" && -L "$root/current" ]] || die 'An existing releases directory and current symlink are required'
-[[ -f "$source_dir/package-lock.json" && -f "$source_dir/ecosystem.config.cjs" && -f "$source_dir/scripts/check-deploy.mjs" ]] || die 'Incomplete release source'
-[[ -f "$script_dir/check-deploy.mjs" ]] || die 'Missing trusted health checker'
+[[ -f "$source_dir/package-lock.json" && -f "$source_dir/ecosystem.config.cjs" && -f "$source_dir/scripts/check-deploy.ts" ]] || die 'Incomplete release source'
+[[ -f "$script_dir/check-deploy.mjs" && -f "$script_dir/deploy-guard.mjs" ]] || die 'Missing trusted health checker'
 for command in node npm pm2 flock git timeout; do command -v "$command" >/dev/null || die "Missing $command in non-interactive PATH"; done
-node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' || die 'Node.js 22 or later is required'
-node --input-type=module - "$base_url" <<'NODE'
-const u = new URL(process.argv[2]);
-if (u.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(u.hostname) || u.username || u.password || u.search || u.hash) {
-  throw new Error('The host-side health URL must be an explicit loopback HTTP application URL');
-}
-NODE
+node "$script_dir/deploy-guard.mjs" runtime || die 'Node.js 22 or later is required'
+node "$script_dir/deploy-guard.mjs" url "$base_url"
 
 # OS lock is also needed for manual deploys and survives a disconnected client.
 exec 9>"$root/.deploy.lock"
@@ -39,27 +34,7 @@ release="$root/releases/$release_id"
 
 # Refuse to change a similarly named process belonging to a different checkout.
 # Do not print PM2's environment: it can contain unrelated private values.
-pm_id=$(timeout --signal=TERM --kill-after=5s 30s pm2 jlist | timeout --signal=TERM --kill-after=5s 30s node -e '
-  const fs = require("node:fs");
-  const list = JSON.parse(fs.readFileSync(0, "utf8"));
-  const matches = list.filter(p => p.name === "shutter-count");
-  if (matches.length !== 1) throw new Error("Expected exactly one existing shutter-count process");
-  const p = matches[0].pm2_env;
-  if (p.status !== "online" || fs.realpathSync(p.pm_cwd) !== process.argv[1]) throw new Error("PM2 process does not match current release");
-  if (p.pm_cwd !== process.argv[4] + "/current" || p.pm_exec_path !== process.argv[4] + "/current/bin/start.mjs") throw new Error("PM2 must already use the stable current cwd and entrypoint; migrate explicitly before automation");
-  if (p.exec_interpreter !== process.execPath) throw new Error("PM2 interpreter differs from the fixed deployment runtime");
-  if (!(Number(String(p.node_version).split(".")[0]) >= 22)) throw new Error("The existing PM2 process must already run Node 22 or later");
-  if (!Number.isInteger(matches[0].pm_id) || matches[0].pm_id < 0) throw new Error("Invalid PM2 process ID");
-  const config = require(process.argv[2]).apps;
-  if (config.length !== 1 || config[0].name !== "shutter-count" || config[0].script !== "bin/start.mjs") throw new Error("Unexpected PM2 application config");
-  for (const [key, value] of Object.entries(config[0].env)) {
-    if (String(p[key] ?? p.env?.[key]) !== String(value)) throw new Error(`Live PM2 ${key} differs from repository config; reconcile explicitly before deploying`);
-  }
-  const base = new URL(process.argv[3]);
-  const expectedPath = String(config[0].env.BASE_PATH).replace(/\/+$/, "");
-  if (Number(base.port || 80) !== Number(config[0].env.PORT) || base.pathname.replace(/\/+$/, "") !== expectedPath) throw new Error("Health URL does not match the PM2 application config");
-  console.log(matches[0].pm_id);
-' "$previous" "$source_dir/ecosystem.config.cjs" "$base_url" "$root")
+pm_id=$(timeout --signal=TERM --kill-after=5s 30s pm2 jlist | timeout --signal=TERM --kill-after=5s 30s node "$script_dir/deploy-guard.mjs" pm2 "$previous" "$source_dir/ecosystem.config.cjs" "$base_url" "$root")
 
 switched=0
 link="$root/.current-$release_id"
@@ -106,8 +81,11 @@ cp -a -- "$source_dir/." "$release/"
 printf '%s\n' "$revision" > "$release/REVISION"
 (
   cd "$release"
-  timeout --signal=TERM --kill-after=10s 300s npm ci --omit=dev --no-audit --no-fund
-  timeout --signal=TERM --kill-after=10s 300s npm test
+  timeout --signal=TERM --kill-after=10s 300s npm ci --no-audit --no-fund
+  timeout --signal=TERM --kill-after=10s 300s npm run typecheck
+  timeout --signal=TERM --kill-after=10s 300s npm run build
+  timeout --signal=TERM --kill-after=10s 300s npm run test:built
+  timeout --signal=TERM --kill-after=10s 300s npm prune --omit=dev --no-audit --no-fund
 )
 # Recheck after dependency installation/tests, immediately before activation.
 # The receiver also checks before fetching. Never activate an obsolete main.

@@ -16,6 +16,25 @@ The receiver fetches the exact commit, verifies the object and extracts a clean 
 
 GitHub deployment concurrency does not cancel an active release; a server `flock` also serializes releases. A newer main commit makes an older queued/preparing release obsolete. Pending GitHub jobs may be replaced, so this converges on the latest tested commit rather than deploying every intermediate commit. PM2 uses one process: a brief restart is expected, not zero downtime.
 
+## Build prerequisite for TypeScript releases
+
+The application now starts from `dist/`. Before deploying this migration, an administrator must install the reviewed release-control artifacts from `dist/trusted/` into the trusted directory. The existing installed release script does not update when this repository changes and cannot build the new application with production dependencies alone.
+
+The new script runs `npm ci`, type checking, a Node/Vite build, compiled tests, then `npm prune --omit=dev` before switching the release. Failures in any preparation step leave `current` untouched. The stable `current/bin/start.mjs` bootstrap runs compiled code with only production dependencies. `REVISION` is copied into the build output for exact-revision health checks. The receiver and trusted health checker retain their fixed filenames. Node checks formerly embedded in Bash now live in the separately installed `deploy-guard.mjs`.
+
+### Separate administrator upgrade for this migration
+
+Run `npm ci && npm run typecheck && npm run build:trusted` from reviewed source. The four `.mjs` bundles in `dist/trusted/` import only Node builtins and include `SHA256SUMS`. The receiver and helper implementation/dependencies are self-contained and must not resolve them from application-writable directories. The PM2 guard still evaluates the reviewed candidate's `ecosystem.config.cjs` under the dedicated application account; deployment preparation also runs the candidate's dependency hooks and tests under that account.
+
+1. Record the real current-release path/SHA and back up the installed receiver, checker, release script and PM2 configuration to an administrator-controlled location.
+2. Pause automatic deployment during a maintenance window if enabled, and verify no release holds the lock. Review the bundles/manifest and install `receive-deploy.mjs`, `check-deploy.mjs`, `deploy-guard.mjs` and `deploy-release.sh` as root-owned mode-0755 files under `/usr/local/libexec/shutter-count/`. Preserve the verified fixed launcher, `receive-node` and dedicated account configuration.
+3. Set `kill_timeout: 25000` in the host PM2 configuration, then have its owner reload only Shutter using the verified stable configuration. Verify the live `pm2_env.kill_timeout`, interpreter, current cwd, `current/bin/start.mjs` and environment. Editing a configuration file does not update the running PM2 settings; the new release guard rejects mismatches.
+4. Verify host Node 22, build capacity and timeout budget. Before restoring automatic deployment, validate the CI-tested migration release's local/public exact SHA and a health-triggered rollback. The built and pruned production app runs without tsx, TypeScript or Vite.
+
+If the control-file upgrade fails, the administrator restores the trusted-file and PM2 configuration backups. Application activation failures restore the previous `current` through the release script. A failed rollback health check requires pausing subsequent releases and inspecting the current SHA, single PM2 process and logs. Restoring control files and restoring an app release are separate operations.
+
+This change has only been implemented and tested locally; these host operations have not been performed. See [PM2's shutdown-timeout documentation](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/).
+
 ## Server prerequisites and administrator setup
 
 This is an existing-deployment updater, not an automatic server provisioner. The example configuration in [`deploy/deploy.example.json`](../deploy/deploy.example.json) binds this Shutter installation. Treat values as requirements to verify, not evidence that setup has completed.
@@ -26,7 +45,7 @@ This is an existing-deployment updater, not an automatic server provisioner. The
 - A root-managed `pm2-shutter-deploy.service` starts only this account's PM2 using `/etc/shutter-count/ecosystem.config.cjs`. Root PM2 startup/dump/fallback files must not retain Shutter references after ownership migration. Never run `pm2 save`, `restart all` or a root deployment.
 - Existing loopback `http://127.0.0.1:3020/shutter` and public `https://rende.fun/shutter` routing. Ordinary releases do not edit nginx or firewall rules.
 
-After explicit approval, an administrator installs reviewed copies of `scripts/receive-deploy.mjs`, `scripts/deploy-release.sh` and `scripts/check-deploy.mjs` under `/usr/local/libexec/shutter-count/`, plus `deploy/deploy.example.json` as `/etc/shutter-count/deploy.json`. All these files and parent directories must be root-owned and not writable by the application account. The release script deliberately uses its installed sibling health checker, not one supplied by the candidate release. Future changes to these installed control scripts require an explicit administrator update; merging the repository does not silently replace them.
+After explicit approval, an administrator installs reviewed copies of `dist/trusted/receive-deploy.mjs`, `dist/trusted/deploy-release.sh`, `dist/trusted/check-deploy.mjs` and `dist/trusted/deploy-guard.mjs` under `/usr/local/libexec/shutter-count/`, plus `deploy/deploy.example.json` as `/etc/shutter-count/deploy.json`. All these files and parent directories must be root-owned and not writable by the application account. The release script deliberately uses its installed sibling health checker, not one supplied by the candidate release. Future changes to these installed control scripts require an explicit administrator update; merging the repository does not silently replace them.
 
 Use a dedicated root-managed authorized-key file outside the writable application HOME, for example `/etc/ssh/authorized_keys/shutter-deploy`. Its one deployment key has `restrict,command="<fixed root-managed launcher>"`. A `Match User shutter-deploy` block must use only that key file, set `AuthorizedKeysCommand none` to disable any inherited cloud login helper, and force the same launcher, with `DisableForwarding yes`, `PermitTTY no`, `PermitUserRC no`, `AuthenticationMethods publickey`, `PasswordAuthentication no` and `KbdInteractiveAuthentication no`. Verify the installed OpenSSH version with `sshd -t` and effective `sshd -T -C ...` before reloading, preserving other users' access.
 
