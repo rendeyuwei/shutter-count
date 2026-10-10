@@ -16,6 +16,52 @@ const introEl = document.getElementById("intro");
 const stageEl = document.getElementById("stage");
 const fileInput = document.getElementById("file-input");
 
+let uploadGeneration = 0;
+let activeController = null;
+
+// Only these bounded codes can enter a report. Never copy the API response,
+// error message, filename, or EXIF into diagnostics, even for unexpected errors.
+const REPORT_STATUSES = new Set([
+  "ok", "no_shutter_field", "unsupported_or_corrupt", "file_too_large",
+  "rate_limited", "bad_request", "error", "unexpected_response",
+  "client_validation_failed", "network_error", "client_timeout",
+]);
+const REPORT_REASONS = new Set([
+  "corrupt", "not_jpeg", "file_too_large", "missing_file", "invalid_multipart",
+  "rate_limited", "parser_unavailable", "timeout", "internal_error",
+  "no_shutter_field", "network_error", "invalid_response", "not_provided", "unknown",
+]);
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function safeRequestId(value) {
+  return typeof value === "string" && value.length === 36 && REQUEST_ID_PATTERN.test(value) ? value : null;
+}
+
+function makeDiagnostics({ requestId = null, status, reason = "not_provided" }) {
+  return {
+    requestId: safeRequestId(requestId),
+    status: REPORT_STATUSES.has(status) ? status : "unexpected_response",
+    reason: REPORT_REASONS.has(reason) ? reason : "unknown",
+    clientOccurredAt: new Date().toISOString(),
+  };
+}
+
+function statusFromResponse(res) {
+  return ({
+    400: "bad_request", 413: "file_too_large", 422: "unsupported_or_corrupt",
+    429: "rate_limited", 500: "error", 502: "error", 503: "error", 504: "error",
+  })[res.status] || "unexpected_response";
+}
+
+function responseDiagnostics(res, data, fallbackReason = "not_provided") {
+  return makeDiagnostics({
+    requestId: safeRequestId(data && data.requestId) ||
+      safeRequestId(res.headers.get("X-Request-ID")),
+    status: data && REPORT_STATUSES.has(data.status) ? data.status : statusFromResponse(res),
+    reason: data && data.reason !== undefined ? data.reason : fallbackReason,
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Static SVG icons (our own markup only — safe for template innerHTML) */
 /* ------------------------------------------------------------------ */
@@ -225,6 +271,72 @@ function buildActions(label, variant) {
   return actions;
 }
 
+function buildFeedbackPanel(diagnostics, noIdExplanation) {
+  const panel = document.createElement("section");
+  panel.className = "feedback-panel";
+  panel.setAttribute("aria-label", "问题反馈与诊断信息");
+
+  const title = document.createElement("h2");
+  title.textContent = "反馈这个问题";
+  const description = document.createElement("p");
+  description.textContent = diagnostics.requestId
+    ? "复制诊断信息发给站点维护者，便于定位本次问题。"
+    : noIdExplanation || "服务器响应未提供有效的诊断 ID，仍可复制以下信息反馈。";
+
+  const report = document.createElement("textarea");
+  report.className = "feedback-panel__report";
+  report.readOnly = true;
+  report.rows = 6;
+  report.spellcheck = false;
+  report.setAttribute("aria-label", "诊断信息（可选择复制）");
+  report.value = [
+    `requestId: ${diagnostics.requestId || "无服务器诊断 ID"}`,
+    `status: ${diagnostics.status}`,
+    `reason: ${diagnostics.reason}`,
+    `发生时间（客户端 UTC）: ${diagnostics.clientOccurredAt}`,
+  ].join("\n");
+
+  const privacy = document.createElement("p");
+  privacy.className = "feedback-panel__privacy";
+  privacy.textContent = "仅含诊断 ID、状态、原因和客户端时间，不含文件名、照片或 EXIF。";
+
+  const actions = document.createElement("div");
+  actions.className = "feedback-panel__actions";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button button--secondary";
+  button.textContent = "复制诊断信息";
+  const copyStatus = document.createElement("span");
+  copyStatus.className = "feedback-panel__copy-status";
+  copyStatus.setAttribute("role", "status");
+  copyStatus.setAttribute("aria-live", "polite");
+
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await navigator.clipboard.writeText(report.value);
+      if (!panel.isConnected) return;
+      button.textContent = "已复制";
+      copyStatus.textContent = "请粘贴到反馈消息中。";
+    } catch {
+      // Clipboard API needs HTTPS and may be denied. Keep a manual copy path,
+      // but never steal focus from a newer upload when an old promise settles.
+      if (!panel.isConnected) return;
+      report.focus();
+      report.select();
+      report.setSelectionRange(0, report.value.length);
+      copyStatus.textContent = "自动复制不可用，已选中内容，请手动复制。";
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  actions.append(button, copyStatus);
+  panel.append(title, description, report, privacy, actions);
+  return panel;
+}
+
 /* ------------------------------------------------------------------ */
 /* State renderers                                                     */
 /* ------------------------------------------------------------------ */
@@ -263,7 +375,7 @@ function renderSuccess(data) {
   introEl.focus();
 }
 
-function renderFail(data) {
+function renderFail(data, diagnostics = makeDiagnostics({ status: "no_shutter_field" })) {
   setIntro("已解析元数据，但未能读到快门计数。");
 
   const nodes = [buildFileChip(data.fileName || "upload")];
@@ -281,19 +393,19 @@ function renderFail(data) {
     nodes.push(buildResultCard(rows, "已知元数据"));
   }
 
-  nodes.push(buildActions("重新上传", "secondary"));
+  nodes.push(buildFeedbackPanel(diagnostics), buildActions("重新上传", "secondary"));
   setStage(...nodes);
   introEl.focus();
 }
 
-function renderError(kind, fileName) {
+function renderError(kind, fileName, diagnostics = makeDiagnostics({ status: "error" }), noIdExplanation) {
   const copy = ERROR_COPY[kind] || ERROR_COPY.network;
   setIntro("未能解析这张图片。");
 
   const nodes = [];
   if (fileName) nodes.push(buildFileChip(fileName));
   nodes.push(buildWarnBanner(copy.title, copy.body));
-  nodes.push(buildActions("重新上传", "secondary"));
+  nodes.push(buildFeedbackPanel(diagnostics, noIdExplanation), buildActions("重新上传", "secondary"));
   setStage(...nodes);
   introEl.focus();
 }
@@ -305,14 +417,20 @@ function renderError(kind, fileName) {
 function handleFile(file) {
   const name = file.name || "upload.jpg";
   if (!/\.jpe?g$/i.test(name)) {
-    renderError("unsupported", name);
+    cancelPendingUpload();
+    renderError("unsupported", name, makeDiagnostics({
+      status: "client_validation_failed", reason: "not_jpeg",
+    }), "文件在浏览器中未通过校验，尚未上传，因此没有服务器诊断 ID。");
     return;
   }
   if (file.size > MAX_FILE_BYTES) {
-    renderError("too_large", name);
+    cancelPendingUpload();
+    renderError("too_large", name, makeDiagnostics({
+      status: "client_validation_failed", reason: "file_too_large",
+    }), "文件在浏览器中未通过校验，尚未上传，因此没有服务器诊断 ID。");
     return;
   }
-  startParse(file, name);
+  return startParse(file, name);
 }
 
 function classifyResponse(res, data) {
@@ -320,7 +438,7 @@ function classifyResponse(res, data) {
   if (res.ok && status === "ok" && data.shutterCount !== null && data.shutterCount !== undefined) {
     return { kind: "success", data };
   }
-  if (status === "no_shutter_field") {
+  if (res.ok && status === "no_shutter_field") {
     return { kind: "fail", data };
   }
   if (res.status === 429 || status === "rate_limited") {
@@ -337,12 +455,21 @@ function classifyResponse(res, data) {
 }
 
 async function startParse(file, name) {
+  cancelPendingUpload();
+  const generation = uploadGeneration;
   renderLoading(name);
   const startedAt = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  activeController = controller;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, FETCH_TIMEOUT_MS);
 
   let outcome;
+  let diagnostics;
+  let response = null;
   try {
     const fd = new FormData();
     fd.append("file", file, name);
@@ -351,33 +478,58 @@ async function startParse(file, name) {
       body: fd,
       signal: controller.signal,
     });
+    response = res;
     let data = null;
+    let invalidResponse = false;
     try {
       data = await res.json();
     } catch {
-      // non-JSON body — treated as an unexpected error below
+      // A proxy may return HTML. Recover the server ID from headers, without
+      // copying its body or exception message into the user's report.
+      invalidResponse = true;
     }
     outcome = classifyResponse(res, data);
+    diagnostics = responseDiagnostics(res, data, invalidResponse ? "invalid_response" : "not_provided");
+    if (timedOut) {
+      outcome = { kind: "error", error: "network" };
+      diagnostics = responseDiagnostics(res, null, "timeout");
+    }
   } catch {
     // network failure, CORS, or the 60 s abort
     outcome = { kind: "error", error: "network" };
+    diagnostics = response ? responseDiagnostics(response, null, timedOut ? "timeout" : "network_error") :
+      makeDiagnostics({
+        status: timedOut ? "client_timeout" : "network_error",
+        reason: timedOut ? "timeout" : "network_error",
+      });
   } finally {
     clearTimeout(timer);
+    if (activeController === controller) activeController = null;
   }
 
+  if (generation !== uploadGeneration) return;
   // Keep the spinner visible for at least MIN_LOADING_MS so it doesn't flash.
   const elapsed = Date.now() - startedAt;
   if (elapsed < MIN_LOADING_MS) {
     await new Promise((r) => setTimeout(r, MIN_LOADING_MS - elapsed));
   }
 
+  if (generation !== uploadGeneration) return;
   if (outcome.kind === "success") renderSuccess(outcome.data);
-  else if (outcome.kind === "fail") renderFail(outcome.data || { fileName: name });
-  else renderError(outcome.error, name);
+  else if (outcome.kind === "fail") renderFail(outcome.data || { fileName: name }, diagnostics);
+  else renderError(outcome.error, name, diagnostics,
+    response ? null : "未收到服务器响应，因此没有服务器诊断 ID。可复制以下信息反馈。");
+}
+
+function cancelPendingUpload() {
+  uploadGeneration += 1;
+  if (activeController) activeController.abort();
+  activeController = null;
 }
 
 /** Back to the upload state, and immediately reopen the picker (one click). */
 function resetAndPick() {
+  cancelPendingUpload();
   fileInput.value = ""; // allow re-choosing the same file
   renderUpload();
   fileInput.click();
