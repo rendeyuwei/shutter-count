@@ -1,89 +1,126 @@
-# ShutterCount · 相机快门次数查询
+# ShutterCount
 
-上传一张相机直出的 JPG 原图，即可读取其快门次数（EXIF + 厂商 MakerNotes，经 ExifTool 解析）。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-- 线上地址：<https://rende.fun/shutter>
-- 图片仅在解析期间写入临时目录，解析完成后立即删除，**不落盘、不持久化**。
-- 前端为纯静态页面（无构建步骤），后端为单个 Fastify 服务。
+Upload a camera-original JPG/JPEG to read its shutter count from EXIF and manufacturer MakerNotes, parsed with ExifTool.
 
-## 技术栈
+- Project URL: <https://rende.fun/shutter>
+- Static frontend with no build step; one Fastify backend.
+- Photos are written to a temporary directory during parsing. The application attempts to remove that directory before sending the response; it does not archive photos or store them in a database.
+- Failed results include copyable diagnostics so operators can find the corresponding server log without asking for the photo.
 
-| 组件 | 说明 |
+## Stack and layout
+
+| Component | Purpose |
 | --- | --- |
-| Node.js | ≥ 20（ESM） |
-| Fastify 5 | HTTP 服务框架 |
-| exiftool-vendored | 内置 ExifTool 二进制，解析 EXIF / MakerNotes |
-| @fastify/multipart | 上传处理（流式写临时文件） |
-| @fastify/static | 托管 `public/` 静态前端（无构建） |
-| @fastify/rate-limit | 解析接口限流（默认 30 次/分钟/IP） |
+| Node.js ≥ 22 | ESM runtime |
+| Fastify 5 | HTTP server |
+| `exiftool-vendored` | Bundled ExifTool for EXIF and MakerNotes |
+| `@fastify/multipart` | Stream uploads to temporary files |
+| `@fastify/static` | Serve `public/` without a frontend build |
+| `@fastify/rate-limit` | Parse endpoint limit: 30 requests/minute/IP by default |
 
-## 本地运行
+- `public/`: frontend, styles, and assets
+- `src/server.js`: routes, upload validation, request IDs, logs, and temporary-file cleanup
+- `src/parse.js`: ExifTool lifecycle and parsing
+- `src/mapping.js`: camera-brand recognition and shutter-tag priorities
+- `test/`: server, parser, mapping, and diagnostics regression tests; sample JPEGs are described in [test/fixtures/README.md](test/fixtures/README.md)
+- `scripts/smoke.mjs`: checks against a running instance
+- `ecosystem.config.cjs` / `bin/start.mjs`: PM2 configuration and explicit process-manager entrypoint
+- `docs/`: [product requirements](docs/PRD-shutter.md) and [UI design](docs/DESIGN.md)
 
-要求：Node.js ≥ 20。
+## Run locally
+
+Requires Node.js ≥ 22.
 
 ```bash
 npm install
 npm start
 ```
 
-默认监听 <http://127.0.0.1:3020/shutter/>（`GET /shutter` 会 308 跳转到 `/shutter/`）。
+Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` with HTTP 308.
 
-### 环境变量
+### Environment variables
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `3020` | 监听端口 |
-| `HOST` | `127.0.0.1` | 监听地址（仅本机；对外由 nginx 反代） |
-| `BASE_PATH` | `/shutter` | 应用挂载路径前缀 |
-| `MAX_UPLOAD_MB` | `50` | 单文件上传上限（MB），超限返回 `file_too_large` |
-| `TRUST_PROXY` | `127.0.0.1,::1` | Fastify `trustProxy`：`true`/`false` 或逗号分隔的 IP/CIDR 列表；默认仅信任本机回环（nginx 同机反代），防止伪造 `X-Forwarded-For` 绕过限流 |
+| `PORT` | `3020` | Listening port |
+| `HOST` | `127.0.0.1` | Bind address; the default expects a local reverse proxy for public access |
+| `BASE_PATH` | `/shutter` | Application path prefix; `/` mounts at the root |
+| `MAX_UPLOAD_MB` | `50` | Server upload limit, in units of 1,048,576 bytes; oversized uploads return `file_too_large` |
+| `TRUST_PROXY` | `127.0.0.1,::1` | Fastify `trustProxy`: `true`, `false`, or comma-separated IPs/CIDRs |
 
-## 测试
+The default trusts only a loopback proxy, such as nginx on the same host. Set `TRUST_PROXY` for the actual proxy topology; trusting arbitrary clients can let them spoof `X-Forwarded-For` and bypass per-IP rate limits.
+
+The browser currently has a separate 50 MB limit in `public/app.js`. Changing `MAX_UPLOAD_MB` alone does not change that browser-side limit.
+
+## Tests
 
 ```bash
 npm test
 ```
 
-使用 Node 内置 test runner（`node --test test/`），覆盖服务器路由、上传校验与厂商标签映射。
+Uses Node's built-in test runner with automatic test discovery (`node --test`). Coverage includes routes and static files, upload validation, rate limits, temporary-file cleanup, symlinked startup, real JPEG parsing, brand-specific tag priorities and plausible-count limits. Diagnostics regression tests cover request-ID correlation, safe failure classifications, and excluding photo content and private metadata from diagnostic output.
 
-### 冒烟测试（针对运行中的实例）
+### Smoke test a running instance
+
+Start the service separately, then run:
 
 ```bash
 npm run smoke -- [baseUrl] file1.jpg [file2.jpg ...]
+# Example using the included fixture and the default local URL:
+npm run smoke -- test/fixtures/NikonD70.jpg
 ```
 
-- `baseUrl` 可省略，默认 `http://127.0.0.1:3020/shutter`。
-- 依次检查：首页返回 200 HTML、`/api/health` 返回 200，然后逐个上传 JPG 并打印 `status / model / shutterCount / capturedAt`。
-- 页面或健康检查失败、或任一请求返回 5xx 时退出码非零。
+- Optional `baseUrl` defaults to `http://127.0.0.1:3020/shutter`.
+- Checks that the page returns HTTP 200 HTML and health returns HTTP 200, then uploads each JPEG and prints `status / model / shutterCount / capturedAt`.
+- Exits nonzero for page or health failures, file/network errors, or a parse response with HTTP 5xx. A 4xx parse response is printed but does not itself fail this smoke script; use `npm test` for assertions about error handling.
+- The smoke script prints filenames and parsed metadata to its own console. That output is separate from the server's privacy-limited diagnostics; do not publish it with private photos.
 
 ## API
 
-所有接口挂在 `BASE_PATH`（默认 `/shutter`）下。
+All routes are under `BASE_PATH`, which defaults to `/shutter`.
+
+Every API response produced by the application, including errors and health checks, carries an `X-Request-ID` header. IDs are UUIDs generated by the server; a caller-supplied `X-Request-ID` cannot choose or replace them. Parse and health JSON responses also include the same ID as `requestId`.
 
 ### `GET /shutter/api/health`
 
-返回 `{ "status": "ok", "exiftool": "<版本号>" }`；ExifTool 不可用时返回 500 `{ "status": "error" }`。
+Returns HTTP 200 with `{ "status": "ok", "exiftool": "<version>", "requestId": "<uuid>" }`. If ExifTool is unavailable, returns HTTP 500 with `{ "status": "error", "requestId": "<uuid>" }`. The same request ID is in the response header.
+
+```bash
+curl -i http://127.0.0.1:3020/shutter/api/health
+```
 
 ### `POST /shutter/api/parse`
 
-- 请求：`multipart/form-data`，字段名 **`file`**，仅接受 JPG/JPEG（校验扩展名 + `FF D8 FF` 魔术字节）。
-- 限流：默认每 IP 30 次/分钟，超限返回 429 `{ "status": "rate_limited" }`。
+- Request: `multipart/form-data` with one file in the field named **`file`**.
+- JPG/JPEG only: the server checks the extension and `FF D8 FF` magic bytes, then validates the file with ExifTool.
+- Default rate limit: 30 requests/minute/IP. This limit applies to the parse endpoint.
 
-响应 `status` 取值：
+```bash
+curl -i \
+  -F 'file=@test/fixtures/NikonD70.jpg' \
+  http://127.0.0.1:3020/shutter/api/parse
+```
 
-| status | HTTP 码 | 含义 |
+| `status` | HTTP | Meaning |
 | --- | --- | --- |
-| `ok` | 200 | 成功读到快门次数，返回 `shutterCount`、`shutterSource`、`make`、`model`、`approximate`、`note`、`capturedAt` |
-| `no_shutter_field` | 200 | 图片有效，但该机型的 MakerNotes 中没有可用的快门类字段 |
-| `unsupported_or_corrupt` | 422 | 非 JPEG、文件损坏或 ExifTool 无法解析（`reason` 说明原因） |
-| `file_too_large` | 413 | 超过 `MAX_UPLOAD_MB`（响应含 `maxMb`） |
-| `bad_request` | 400 | 缺少上传文件（表单字段 `file`） |
+| `ok` | 200 | A usable shutter count was found |
+| `no_shutter_field` | 200 | Valid JPEG, but no usable supported shutter-count field |
+| `unsupported_or_corrupt` | 422 | Not a JPEG, or ExifTool reported a damaged/invalid image; `reason` is `not_jpeg` or `corrupt` |
+| `file_too_large` | 413 | Exceeds the upload limit; includes `maxMb` |
+| `bad_request` | 400 | Missing file, incorrect file field, or malformed upload |
+| `rate_limited` | 429 | Too many parse requests; wait before retrying |
+| `error` | 500 | Unexpected server error |
+| `error` | 503 | ExifTool timed out or could not complete a read; `reason` is `timeout` or `parser_unavailable` |
 
-成功示例：
+Success example (illustrative ID and photo data):
 
 ```json
 {
   "status": "ok",
+  "requestId": "eb4d7287-0bd3-461e-8a8e-d978d46c8407",
+  "fileName": "photo.jpg",
   "make": "NIKON CORPORATION",
   "model": "Nikon D750",
   "shutterCount": 12345,
@@ -94,42 +131,140 @@ npm run smoke -- [baseUrl] file1.jpg [file2.jpg ...]
 }
 ```
 
-## 支持的品牌与标签优先级
+`fileName` is a sanitized display name, not a storage path. `approximate` and `note` explain counts that may differ from mechanical shutter actuations. Unavailable metadata is `null`; `no_shutter_field` retains available make/model/capture-time fields and has a null shutter count.
 
-快门次数只从**厂商自身的 MakerNotes 组**中读取，按下列优先级依次尝试；候选值必须是 0 < n ≤ 5,000,000 的整数（超出视为脏数据，跳到下一候选）：
+Failure example, with the same ID in `X-Request-ID`:
 
-| 品牌 | 标签优先级 | 备注 |
+```json
+{
+  "status": "unsupported_or_corrupt",
+  "requestId": "edaa18de-1f94-4b81-9b95-e6c721aa04be",
+  "reason": "corrupt",
+  "fileName": "photo.jpg",
+  "message": "无法解析该文件，图片可能已损坏。"
+}
+```
+
+`requestId` is for correlation, not a way to retrieve an uploaded photo. `stage` and `diagnosticCode` are server-log fields, not public API fields. ExifTool timeouts and read failures return HTTP 503 with `status: "error"` and `reason: "timeout"` or `"parser_unavailable"`. These indicate a tool/service failure, not a verdict that the photo is corrupt. An explicit ExifTool image error or JPEG format warning still returns HTTP 422 with `unsupported_or_corrupt` / `corrupt`.
+
+## Supported brands and tag priorities
+
+For recognized brands, counts come only from that manufacturer's own MakerNotes group, in the order below. Candidate values must be integers with `0 < n ≤ 5,000,000`; invalid values are skipped so the next candidate can be tried.
+
+| Brand | Tag priority | Notes |
 | --- | --- | --- |
 | Nikon | `ShutterCount` → `MechanicalShutterCount` | |
-| Canon | `ShutterCount` → `ImageCount` | `ImageCount` 为近似值：格式化存储卡后可能归零 |
+| Canon | `ShutterCount` → `ImageCount` | `ImageCount` is approximate and may reset after card formatting |
 | Sony | `ShutterCount` → `ShutterCount2` → `ShutterCount3` | |
-| FUJIFILM | `ImageCount` | 近似值：拍摄计数（含电子快门），固件升级后可能归零 |
-| PENTAX | `ShutterCount` | 含 Ricoh Imaging / Asahi 机身上报 |
-| OLYMPUS | `ShutterCount` → `MechanicalShutterCount` → `ImageCount` | 含 OM Digital / OM System；有则读取 |
-| Panasonic | `ShutterCount` → `MechanicalShutterCount` → `ImageCount` | 有则读取 |
+| FUJIFILM | `ImageCount` | Approximate shooting count, including electronic shutter; may reset after firmware updates |
+| PENTAX | `ShutterCount` | Includes Ricoh Imaging / Asahi identification |
+| OLYMPUS | `ShutterCount` → `MechanicalShutterCount` → `ImageCount` | Includes OM Digital / OM System identification; reads available fields |
+| Panasonic | `ShutterCount` → `MechanicalShutterCount` → `ImageCount` | Reads available fields |
 
-未收录的品牌会做通用兜底：读取任意 MakerNotes 组中的 `ShutterCount` 标签。
+Unknown brands use a generic fallback for a group-qualified `ShutterCount` tag. Brand recognition does not guarantee that every model or JPEG contains a count. Edited, exported, or messaging-app copies may have lost MakerNotes; try a camera-original JPEG.
 
-## 生产部署概要
+## Diagnostics and troubleshooting
 
-部署在 rende.fun 所在服务器，路径与进程约定如下：
+### Copy a failure report
 
-- 目录布局：`/opt/shutter-count/releases/<id>/` + `/opt/shutter-count/current` 软链指向当前版本（入口对软链安全，Node realpath 解析已处理）。
-- 进程管理：PM2，应用名 **`shutter-count`**（配置见 `ecosystem.config.cjs`，可用 `SHUTTER_APP_DIR` 指定发布目录，便于软链切换时不中断管理）。
-- 端口：**3020**，仅监听 `127.0.0.1`。
-- nginx：`snippets/shutter-locations.conf` 以 `include` 方式并入 rende.fun 站点配置，将 `/shutter` 反代到本机 3020；**勿动 easypic** 相关的既有配置。
+When no shutter count can be read or an error occurs, use **复制诊断信息** (“Copy diagnostics”) in the result view. The copied report contains the request ID when available, status, reason, and browser time in UTC. If automatic copying is unavailable, the read-only report can be selected and copied manually. It excludes photos, filenames, camera model/serial number, GPS, and EXIF values.
 
-常用命令：
+Browser-side validation does not send an upload and has no server request ID. A network failure or browser timeout may also leave the browser without an ID; the report explicitly marks it as unavailable rather than inventing one. A missing ID after a network failure does not prove the server never received the upload.
+
+### Find the matching server event
+
+With logging enabled, each completed parse response emits one structured `parse_result` event for success or failure, including rejected uploads and rate limits:
+
+| Field | Meaning |
+| --- | --- |
+| `requestId` | Same server-generated UUID as the response |
+| `status` | Public result status |
+| `httpCode` | HTTP response code |
+| `durationMs` | Elapsed request-processing time in milliseconds |
+| `stage` | `upload`, `validation`, `exiftool`, `mapping`, or `complete` |
+| `diagnosticCode` | Stable, more specific failure or success classification |
+
+Illustrative event payload (the logger also adds its standard envelope):
+
+```json
+{
+  "event": "parse_result",
+  "requestId": "65d39e92-207c-46aa-9051-c86e6a0b5b7e",
+  "status": "error",
+  "httpCode": 503,
+  "durationMs": 15102,
+  "stage": "exiftool",
+  "diagnosticCode": "exiftool_timeout"
+}
+```
+
+| `diagnosticCode` | What to check |
+| --- | --- |
+| `upload_missing_file` | Submit one file in the `file` field |
+| `upload_invalid_field` | Correct the multipart file-field name to `file` |
+| `upload_invalid_extension` | Use an original `.jpg` or `.jpeg` file |
+| `upload_invalid_magic` | Signature or parsed file type is not JPEG; renaming an extension does not convert a file |
+| `upload_too_large` | Check server, browser, and reverse-proxy size limits |
+| `upload_invalid_multipart` | Check the multipart boundary and body; let the browser or `curl -F` set the content type |
+| `exiftool_timeout` | HTTP 503 tool timeout, not an image-corruption verdict; check load and ExifTool health, then retry with a known-good fixture |
+| `exiftool_read_failed` | HTTP 503 tool/read failure, including an invalid parser return; check health and a known-good fixture before blaming the image |
+| `exiftool_reported_error` | ExifTool reported an error in the image |
+| `jpeg_format_error` | JPEG structure is invalid or inconsistent |
+| `no_shutter_field` | Use the camera-original file; the model may not provide a supported usable count |
+| `parse_ok` | Count successfully mapped |
+| `internal_error` | Check service health and operational conditions, such as temporary-directory access |
+| `rate_limited` | Wait for the rate-limit window; check proxy trust configuration if unrelated users share a limit |
+
+When mapping runs, an optional `mapping` summary contains `brand` (a canonical known label or `unknown`), `hasExif`, `candidateCount`, `presentCandidateCount`, and `invalidCandidateCount`. These are safe classifications, booleans, and counts; they do not expose tag values. Additional diagnostics are limited to similarly predefined field states. Raw errors, arbitrary EXIF values, filenames, camera models, serial numbers, and GPS are not written to these events. Do not enable raw payload/EXIF logging to investigate a failure.
+
+Unexpected internal failures also include an allowlisted `errorCode` (for example `ENOENT`, `EACCES`, `ENOSPC`, or `UNKNOWN`) to help distinguish storage/OS failures without exposing error messages or paths.
+
+Health checks emit a separate `health_result` event with `health_ok` or `exiftool_unavailable`. A failed temporary-directory cleanup emits `temp_cleanup_failed`; operators should investigate temporary storage rather than assume the file was deleted.
+
+### Log location, restarts, and retention
+
+`npm start` and the PM2 entrypoint enable structured logging to the process output. `buildApp()` defaults to logging off for tests/embedding unless a logger is supplied. The app adds no database or separate log-storage service.
+
+With the supplied PM2 configuration:
 
 ```bash
-pm2 start ecosystem.config.cjs   # 首次
-pm2 reload shutter-count         # 发布后切换软链再重载
+pm2 logs shutter-count --lines 100
+pm2 describe shutter-count   # inspect the actual output/error log paths
+
+# Search both default files using the ID copied from the UI or API:
+REQUEST_ID='65d39e92-207c-46aa-9051-c86e6a0b5b7e'
+grep -F -- "$REQUEST_ID" \
+  "${PM2_HOME:-$HOME/.pm2}/logs/shutter-count-out.log" \
+  "${PM2_HOME:-$HOME/.pm2}/logs/shutter-count-error.log"
+```
+
+PM2 defaults to `~/.pm2/logs/` (or `$PM2_HOME/logs/`). This configuration enables timestamp prefixes, so PM2 log-file lines may have text before the JSON; a plain `grep` works without stripping the prefix. Use the paths shown by `pm2 describe` if the installation differs.
+
+PM2 log files normally survive an application restart, but that is not a backup or a retention guarantee. Rotation, disk limits, access controls, and backups are the operator's responsibility. Plain stdout, especially in a container, is not necessarily durable after a restart or replacement; configure the supervisor/platform's log collection and retention. Search rotated/archived files as well if the current files no longer contain the request.
+
+If there is no matching event, check the instance and log destination, whether logging was enabled, and whether a proxy rejected the request before it reached Fastify. Browser-only validation creates no server event. Correlate browser time with server time carefully; clocks and time zones can differ.
+
+## Deployment conventions
+
+The repository documents this deployment layout for `rende.fun`; these settings do not verify the state or version of a running deployment.
+
+- Runtime: Node.js ≥ 22, required by the locked `exiftool-vendored` 39 dependency. Updating the declared runtime requirement does not upgrade dependencies.
+- Releases: `/opt/shutter-count/releases/<id>/`, with `/opt/shutter-count/current` pointing to the active release. Startup handles symlinked entrypoints.
+- Process manager: PM2, app name **`shutter-count`**, configured by `ecosystem.config.cjs`. `SHUTTER_APP_DIR` can select the release directory.
+- Bind address: `127.0.0.1:3020` by default.
+- Reverse proxy: the host's `snippets/shutter-locations.conf` can be included in the nginx site to proxy `/shutter` to port 3020. This host-side snippet is not bundled in the repository. Preserve unrelated `easypic` configuration.
+
+```bash
+pm2 start ecosystem.config.cjs   # initial start
+pm2 reload shutter-count        # reload after switching the release symlink
 pm2 logs shutter-count
 ```
 
-## 隐私
+## Privacy and data handling
 
-- 上传文件写入系统临时目录下前缀为 `shuttercount-` 的独立子目录，解析完成后**在响应发出前立即删除**。
-- 服务启动时会尽力清理崩溃残留的、超过 10 分钟的 `shuttercount-*` 临时目录。
-- 不持久化任何图片：不入库、不留档；日志只记录状态码与耗时，绝不记录文件内容或元数据。
-- 错误响应不暴露堆栈、文件内容或元数据。
+- Uploads are temporarily written to a separate `shuttercount-*` directory under the system temporary directory. The client filename is never used as the on-disk storage path.
+- Cleanup is attempted and awaited before the parse response is sent. It is best-effort: filesystem errors or crashes can leave temporary files behind.
+- At startup, the service attempts to remove `shuttercount-*` directories older than 10 minutes. This is not a continuous cleanup service or a guarantee of deletion after a crash; operators should account for temporary storage and filesystem backups.
+- There is no photo database or intentional long-term photo archive. Parse results sent to the uploader may include the sanitized filename and selected camera metadata; server diagnostic events and the UI's copied diagnostic report omit those values.
+- Diagnostics use allowlisted classifications and summaries rather than photo bytes, full EXIF, raw exception messages, or stack traces. Request IDs correlate events only; no photo-download/history API is added.
+- Proxy, supervisor, hosting, and backup logs/storage have their own policies. Review those separately when operating the service.

@@ -258,3 +258,21 @@ export function mapTags(rawTags) {
     capturedAt,
   };
 }
+
+/** Safe diagnostic summary: no arbitrary tag names or values leave this helper. */
+export function summarizeMapping(rawTags) {
+  const { entries, byFullKey, byBareName } = normalize(rawTags);
+  const make = getStr(byFullKey, byBareName, "IFD0:Make", "Make");
+  const brand = detectBrand(make);
+  const candidates = brand
+    ? brand.sources.map((src) => findInVendorGroup(entries, brand.groupPrefix, src.name))
+    : [findAnyShutterCount(entries)];
+  const present = candidates.filter(Boolean);
+  return {
+    brand: brand?.id ?? "unknown",
+    hasExif: entries.some((entry) => /^(ifd0|exififd)$/i.test(entry.group)),
+    candidateCount: candidates.length,
+    presentCandidateCount: present.length,
+    invalidCandidateCount: present.filter((entry) => validCount(entry.value) === null).length,
+  };
+}

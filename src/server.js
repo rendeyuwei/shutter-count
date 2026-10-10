@@ -1,11 +1,12 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import rateLimit from "@fastify/rate-limit";
@@ -98,6 +99,27 @@ function isFileTooLarge(err) {
   );
 }
 
+// Restrict diagnostics to a fixed vocabulary; OS error messages contain paths.
+function safeErrorCode(err) {
+  const allowed = ["ENOENT", "EACCES", "EPERM", "ENOSPC", "EIO", "EMFILE", "ENFILE", "EROFS", "EPIPE", "ECONNRESET", "ETIMEDOUT"];
+  return allowed.includes(err?.code) ? err.code : "UNKNOWN";
+}
+
+function isInvalidMultipart(err) {
+  return Boolean(err && (
+    ["FST_INVALID_MULTIPART_CONTENT_TYPE", "FST_FILES_LIMIT", "FST_FIELDS_LIMIT", "FST_PARTS_LIMIT",
+      "FST_INVALID_JSON_FIELD_ERROR", "FST_PROTO_VIOLATION", "FST_INVALID_MULTIPART", "FST_ERR_CTP_INVALID_MEDIA_TYPE", "FST_ERR_CTP_EMPTY_JSON_BODY", "FST_ERR_CTP_INVALID_JSON_BODY"].includes(err.code) ||
+    /^(Multipart: Boundary not found|Unexpected end of (form|multipart data|file)|Malformed part header|Part terminated early|Premature close)$/.test(String(err.message))
+  ));
+}
+
+function assertReadableUpload(stream) {
+  if (stream.errored) throw stream.errored;
+  if (stream.destroyed) {
+    throw Object.assign(new Error("Invalid multipart stream"), { code: "FST_INVALID_MULTIPART" });
+  }
+}
+
 export function buildApp(opts = {}) {
   const port = Number(opts.port ?? process.env.PORT ?? 3020);
   const host = opts.host ?? process.env.HOST ?? "127.0.0.1";
@@ -113,7 +135,42 @@ export function buildApp(opts = {}) {
   const tmpRoot = opts.tmpRoot ?? os.tmpdir();
   const rateLimitMax = opts.rateLimitMax ?? 30;
 
-  const app = Fastify({ logger: opts.logger ?? false, trustProxy });
+  const parse = opts.parseFile ?? parseFile;
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    trustProxy,
+    // Never trust an uploaded request ID; UUIDs stay unique across restarts.
+    requestIdHeader: false,
+    genReqId: () => randomUUID(),
+    // The explicit allowlisted event below replaces automatic request logs,
+    // which otherwise include client IP addresses and arbitrary query strings.
+    logController: new LogController({ disableRequestLogging: true }),
+  });
+
+  app.decorateRequest("diagnostic", null);
+  app.addHook("onRequest", async (req, reply) => {
+    reply.header("X-Request-ID", req.id);
+    req.diagnostic = {
+      startedAt: Date.now(), stage: "upload", diagnosticCode: "internal_error",
+    };
+  });
+
+  function finish(req, reply, code, body) {
+    req.diagnostic.status = body.status;
+    return reply.code(code).send({ ...body, requestId: req.id });
+  }
+
+  app.addHook("onResponse", async (req, reply) => {
+    const route = req.routeOptions.url;
+    if (route !== basePath + "/api/parse" && route !== basePath + "/api/health") return;
+    const { startedAt, ...diagnostic } = req.diagnostic;
+    const event = route.endsWith("/parse") ? "parse_result" : "health_result";
+    const level = reply.statusCode >= 500 ? "error" : diagnostic.status === "ok" ? "info" : "warn";
+    req.log[level]({
+      event, requestId: req.id, ...diagnostic,
+      httpCode: reply.statusCode, durationMs: Date.now() - startedAt,
+    }, event);
+  });
 
   app.register(rateLimit, { global: false });
 
@@ -141,12 +198,14 @@ export function buildApp(opts = {}) {
       });
     }
 
-    instance.get(basePath + "/api/health", async (_req, reply) => {
+    instance.get(basePath + "/api/health", async (req, reply) => {
       try {
         const version = await exiftoolVersion();
-        return reply.send({ status: "ok", exiftool: version });
+        Object.assign(req.diagnostic, { stage: "complete", diagnosticCode: "health_ok" });
+        return finish(req, reply, 200, { status: "ok", exiftool: version });
       } catch {
-        return reply.code(500).send({ status: "error" });
+        Object.assign(req.diagnostic, { stage: "exiftool", diagnosticCode: "exiftool_unavailable" });
+        return finish(req, reply, 500, { status: "error" });
       }
     });
 
@@ -161,64 +220,61 @@ export function buildApp(opts = {}) {
         },
       },
       async (req, reply) => {
-        const startedAt = Date.now();
         let tmpDir = null;
+        const mark = (stage, diagnosticCode) => Object.assign(req.diagnostic, { stage, diagnosticCode });
 
         // Inner worker: resolves to {code, body}. The temp dir is removed in
         // the finally block below BEFORE the response is sent (privacy), and
-        // only status + timing are ever logged — never file contents.
+        // only allowlisted diagnostics are logged — never raw errors or metadata.
         const processUpload = async () => {
-          let part;
-          try {
-            part = await req.file();
-          } catch (err) {
-            if (isFileTooLarge(err)) {
-              return { code: 413, body: { status: "file_too_large", maxMb: maxUploadMb } };
+          let fileName = null;
+          let tmpFile = null;
+          let rejection = null;
+          // Consume every part before parsing, so trailing malformed fields and
+          // the files:1 limit cannot be silently ignored after the first file.
+          for await (const part of req.parts()) {
+            if (part.type !== "file") continue;
+            assertReadableUpload(part.file);
+            if (part.fieldname !== "file") {
+              for await (const _chunk of part.file) { /* discard */ }
+              mark("upload", "upload_invalid_field");
+              rejection = { code: 400, body: { status: "bad_request", message: '请使用表单字段 "file" 上传。' } };
+              continue;
             }
-            throw err;
+            fileName = sanitizeFileName(part.filename);
+            // Filename is display-only; it is never used on disk or in logs.
+            if (!/\.jpe?g$/i.test(part.filename || "")) {
+              for await (const _chunk of part.file) { /* discard */ }
+              mark("validation", "upload_invalid_extension");
+              rejection = {
+                code: 422,
+                body: { status: "unsupported_or_corrupt", reason: "not_jpeg", fileName,
+                  message: "仅支持 JPG/JPEG 格式的相机原图。" },
+              };
+              continue;
+            }
+            mark("upload", "internal_error");
+            tmpDir = await fsp.mkdtemp(path.join(tmpRoot, TMP_PREFIX));
+            tmpFile = path.join(tmpDir, "upload.jpg");
+            // A malformed stream can close during mkdtemp. Passing an already
+            // destroyed stream to pipeline may otherwise wait forever.
+            assertReadableUpload(part.file);
+            await pipeline(part.file, fs.createWriteStream(tmpFile));
+            if (part.file.truncated) {
+              mark("upload", "upload_too_large");
+              rejection = { code: 413, body: { status: "file_too_large", maxMb: maxUploadMb } };
+            }
           }
-
-          if (!part || !part.file) {
+          if (rejection) return rejection;
+          if (!tmpFile) {
+            mark("upload", "upload_missing_file");
             return {
               code: 400,
-              body: {
-                status: "bad_request",
-                message: '缺少上传文件（表单字段 "file"）。',
-              },
+              body: { status: "bad_request", message: '缺少上传文件（表单字段 "file"）。' },
             };
           }
 
-          const fileName = sanitizeFileName(part.filename);
-
-          // Extension check (client filename is display-only; never used on disk).
-          if (!/\.jpe?g$/i.test(part.filename || "")) {
-            await part.toBuffer().catch(() => {}); // drain so the connection stays clean
-            return {
-              code: 422,
-              body: {
-                status: "unsupported_or_corrupt",
-                reason: "not_jpeg",
-                fileName,
-                message: "仅支持 JPG/JPEG 格式的相机原图。",
-              },
-            };
-          }
-
-          tmpDir = await fsp.mkdtemp(path.join(tmpRoot, TMP_PREFIX));
-          const tmpFile = path.join(tmpDir, "upload.jpg");
-
-          try {
-            await pipeline(part.file, fs.createWriteStream(tmpFile));
-          } catch (err) {
-            if (isFileTooLarge(err) || part.file.truncated) {
-              return { code: 413, body: { status: "file_too_large", maxMb: maxUploadMb } };
-            }
-            throw err;
-          }
-          if (part.file.truncated) {
-            return { code: 413, body: { status: "file_too_large", maxMb: maxUploadMb } };
-          }
-
+          mark("validation", "internal_error");
           // Magic-byte check: first 3 bytes must be FF D8 FF.
           const head = Buffer.alloc(3);
           let bytesRead = 0;
@@ -230,6 +286,7 @@ export function buildApp(opts = {}) {
             await fh.close();
           }
           if (bytesRead < 3 || !head.equals(JPEG_MAGIC)) {
+            mark("validation", "upload_invalid_magic");
             return {
               code: 422,
               body: {
@@ -241,9 +298,12 @@ export function buildApp(opts = {}) {
             };
           }
 
-          const result = await parseFile(tmpFile, fileName);
+          mark("exiftool", "internal_error");
+          const result = await parse(tmpFile, fileName, {
+            onDiagnostic: (details) => Object.assign(req.diagnostic, details),
+          });
           return {
-            code: result.status === "unsupported_or_corrupt" ? 422 : 200,
+            code: result.status === "error" ? 503 : result.status === "unsupported_or_corrupt" ? 422 : 200,
             body: result,
           };
         };
@@ -253,38 +313,50 @@ export function buildApp(opts = {}) {
           out = await processUpload();
         } catch (err) {
           if (isFileTooLarge(err)) {
+            mark("upload", "upload_too_large");
             out = { code: 413, body: { status: "file_too_large", maxMb: maxUploadMb } };
+          } else if (isInvalidMultipart(err)) {
+            mark("upload", "upload_invalid_multipart");
+            out = { code: 400, body: { status: "bad_request" } };
           } else {
-            // Privacy: no stack traces, file contents, or metadata in responses.
-            req.log.error({ err: String(err && err.message) }, "parse failed");
+            // Error messages may contain upload paths or metadata. Never log them.
+            req.diagnostic.diagnosticCode = "internal_error";
+            req.diagnostic.errorCode = safeErrorCode(err);
             out = { code: 500, body: { status: "error" } };
           }
         } finally {
           if (tmpDir) {
-            await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+            try {
+              await fsp.rm(tmpDir, { recursive: true, force: true });
+            } catch {
+              // Preserve parse result but surface a privacy-relevant cleanup failure.
+              req.diagnostic.cleanupFailed = true;
+              req.log.error({ event: "temp_cleanup_failed", requestId: req.id }, "temp_cleanup_failed");
+            }
           }
         }
 
-        req.log.info(
-          { status: out.body && out.body.status, httpCode: out.code, ms: Date.now() - startedAt },
-          "parse upload"
-        );
-        return reply.code(out.code).send(out.body);
+        return finish(req, reply, out.code, out.body);
       }
     );
   });
 
   app.setErrorHandler((err, req, reply) => {
     if (isFileTooLarge(err)) {
-      return reply.code(413).send({ status: "file_too_large", maxMb: maxUploadMb });
+      Object.assign(req.diagnostic, { stage: "upload", diagnosticCode: "upload_too_large" });
+      return finish(req, reply, 413, { status: "file_too_large", maxMb: maxUploadMb });
     }
     if (err.statusCode === 429) {
-      return reply
-        .code(429)
-        .send({ status: "rate_limited", message: err.message });
+      Object.assign(req.diagnostic, { stage: "upload", diagnosticCode: "rate_limited" });
+      return finish(req, reply, 429, { status: "rate_limited", message: "请求过于频繁，请稍后重试。" });
     }
-    req.log.error({ err: String(err && err.message) }, "request error");
-    reply.code(500).send({ status: "error" });
+    if (isInvalidMultipart(err)) {
+      Object.assign(req.diagnostic, { stage: "upload", diagnosticCode: "upload_invalid_multipart" });
+      return finish(req, reply, 400, { status: "bad_request" });
+    }
+    req.diagnostic.diagnosticCode = "internal_error";
+    req.diagnostic.errorCode = safeErrorCode(err);
+    return finish(req, reply, 500, { status: "error" });
   });
 
   app.addHook("onClose", async () => {

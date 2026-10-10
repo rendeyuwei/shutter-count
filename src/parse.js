@@ -1,6 +1,6 @@
 // ExifTool I/O: a single shared ExifTool instance, ended on app close.
 import { ExifTool } from "exiftool-vendored";
-import { mapTags } from "./mapping.js";
+import { mapTags, summarizeMapping } from "./mapping.js";
 
 let exiftool = null;
 
@@ -33,27 +33,37 @@ export async function exiftoolVersion() {
 /**
  * Parse a JPEG on disk and map its tags to the API result shape.
  * Never throws for bad input: corrupt / non-JPEG files come back as
- * unsupported_or_corrupt. `fileName` is echoed through unchanged (the caller
+ * unsupported_or_corrupt. Tool failures return error, not a claim of corrupt input.
+ * `fileName` is echoed through unchanged (the caller
  * is responsible for sanitizing it).
  */
-export async function parseFile(filePath, fileName = null) {
+export async function parseFile(filePath, fileName = null, options = {}) {
+  // Diagnostics are fixed codes / allowlisted summaries, never raw errors or
+  // EXIF values. The callback is server-internal and is not part of the API.
+  const report = options.onDiagnostic ?? (() => {});
+  const readRaw = options.readRaw ?? ((...args) => getExifTool().readRaw(...args));
   let raw;
   try {
-    raw = await getExifTool().readRaw(filePath, ["-G1", "-n", "-json"]);
-  } catch {
-    return {
-      status: "unsupported_or_corrupt",
-      reason: "corrupt",
-      fileName,
-      message: "无法解析该文件，图片可能已损坏。",
-    };
+    raw = await readRaw(filePath, ["-G1", "-n", "-json"]);
+  } catch (err) {
+    const timeout = /timeout|timed?\s*out/i.test(String(err?.message ?? "")) ||
+      err?.code === "ETIMEDOUT";
+    report({ stage: "exiftool", diagnosticCode: timeout ? "exiftool_timeout" : "exiftool_read_failed" });
+    return parserError(fileName, timeout ? "timeout" : "parser_unavailable");
+  }
+
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    report({ stage: "exiftool", diagnosticCode: "exiftool_read_failed" });
+    return parserError(fileName, "parser_unavailable");
   }
 
   if (raw["ExifTool:Error"]) {
+    report({ stage: "exiftool", diagnosticCode: "exiftool_reported_error" });
     return corrupt(fileName);
   }
 
   if (raw["File:FileType"] !== "JPEG") {
+    report({ stage: "validation", diagnosticCode: "upload_invalid_magic" });
     return {
       status: "unsupported_or_corrupt",
       reason: "not_jpeg",
@@ -65,10 +75,16 @@ export async function parseFile(filePath, fileName = null) {
   // Truncated/garbage JPEGs often parse "successfully" with FileType JPEG but a
   // structural warning (e.g. "JPEG format error"). Treat those as corrupt.
   if (hasFormatErrorWarning(raw)) {
+    report({ stage: "exiftool", diagnosticCode: "jpeg_format_error" });
     return corrupt(fileName);
   }
 
   const mapped = mapTags(raw);
+  report({
+    stage: mapped.status === "ok" ? "complete" : "mapping",
+    diagnosticCode: mapped.status === "ok" ? "parse_ok" : "no_shutter_field",
+    mapping: summarizeMapping(raw),
+  });
   return {
     status: mapped.status,
     fileName,
@@ -79,6 +95,13 @@ export async function parseFile(filePath, fileName = null) {
     approximate: mapped.approximate,
     note: mapped.note,
     capturedAt: mapped.capturedAt,
+  };
+}
+
+function parserError(fileName, reason) {
+  return {
+    status: "error", reason, fileName,
+    message: "解析服务暂时不可用，请稍后重试。",
   };
 }
 
