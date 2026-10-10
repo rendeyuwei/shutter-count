@@ -15,6 +15,13 @@ import { parseFile, exiftoolVersion, closeExifTool } from "./parse.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
+// Captured once at startup: a symlink switch must not make an old process
+// report the new release. Local checkouts do not need a REVISION file.
+let releaseRevision = null;
+try {
+  const value = fs.readFileSync(path.join(__dirname, "..", "REVISION"), "utf8").trim();
+  if (/^[a-f0-9]{40}$/.test(value)) releaseRevision = value;
+} catch {}
 
 const TMP_PREFIX = "shuttercount-";
 const STALE_TMP_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -202,7 +209,7 @@ export function buildApp(opts = {}) {
       try {
         const version = await exiftoolVersion();
         Object.assign(req.diagnostic, { stage: "complete", diagnosticCode: "health_ok" });
-        return finish(req, reply, 200, { status: "ok", exiftool: version });
+        return finish(req, reply, 200, { status: "ok", exiftool: version, revision: releaseRevision });
       } catch {
         Object.assign(req.diagnostic, { stage: "exiftool", diagnosticCode: "exiftool_unavailable" });
         return finish(req, reply, 500, { status: "error" });

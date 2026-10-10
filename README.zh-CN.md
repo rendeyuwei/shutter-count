@@ -85,7 +85,7 @@ npm run smoke -- test/fixtures/NikonD70.jpg
 
 ### `GET /shutter/api/health`
 
-正常返回 HTTP 200 和 `{ "status": "ok", "exiftool": "<version>", "requestId": "<uuid>" }`。ExifTool 不可用时返回 HTTP 500 和 `{ "status": "error", "requestId": "<uuid>" }`。其中 `<version>` 为版本号，`<uuid>` 为请求 ID，同一 ID 也出现在响应头中。
+正常返回 HTTP 200 和 `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`。发布目录有有效 `REVISION` 文件时，`revision` 为 commit SHA 字符串；普通本地 checkout 中为 JSON `null`。该值在进程启动时读取，避免切换软链后旧进程冒认新版本。ExifTool 不可用时返回 HTTP 500 和 `{ "status": "error", "requestId": "<uuid>" }`。其中 `<version>` 为版本号，`<uuid>` 为请求 ID，同一 ID 也出现在响应头中。
 
 ```bash
 curl -i http://127.0.0.1:3020/shutter/api/health
@@ -245,6 +245,8 @@ PM2 日志文件通常会跨应用重启保留，但这不是备份或保留时�
 若找不到对应事件，请核对实例与日志位置、当时是否启用了日志，以及请求是否在到达 Fastify 前就被代理拒绝。浏览器本地校验不会生成服务端事件。按时间排查时，还需注意浏览器与服务端的时钟、时区可能不同。
 
 ## 部署约定
+
+经过测试的版本发布与 GitHub Actions 配置见[自动部署说明](docs/DEPLOYMENT.zh-CN.md)（[English](docs/DEPLOYMENT.md)）。默认关闭自动部署，须核实主机并明确启用；仅添加工作流不会部署或授予访问权限。
 
 仓库记录了面向 `rende.fun` 的以下部署布局；这些配置并不证明线上当前状态或已部署版本。
 

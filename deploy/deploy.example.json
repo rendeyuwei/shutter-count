@@ -1,0 +1,10 @@
+{
+  "repository": "rendeyuwei/shutter-count",
+  "repositoryId": 1412053352,
+  "root": "/opt/shutter-count",
+  "home": "/var/lib/shutter-deploy",
+  "pm2Home": "/var/lib/shutter-deploy/.pm2",
+  "runtimeBin": "/opt/node-v22.23.2-linux-x64/bin",
+  "localUrl": "http://127.0.0.1:3020/shutter",
+  "publicUrl": "https://rende.fun/shutter"
+}

@@ -85,7 +85,7 @@ Every API response produced by the application, including errors and health chec
 
 ### `GET /shutter/api/health`
 
-Returns HTTP 200 with `{ "status": "ok", "exiftool": "<version>", "requestId": "<uuid>" }`. If ExifTool is unavailable, returns HTTP 500 with `{ "status": "error", "requestId": "<uuid>" }`. The same request ID is in the response header.
+Returns HTTP 200 with `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`. `revision` is a commit SHA string when the release contains a valid `REVISION` file, or JSON `null` in a normal local checkout. It is captured at process startup so an old process cannot claim a new release after a symlink switch. If ExifTool is unavailable, returns HTTP 500 with `{ "status": "error", "requestId": "<uuid>" }`. The same request ID is in the response header.
 
 ```bash
 curl -i http://127.0.0.1:3020/shutter/api/health
@@ -245,6 +245,8 @@ PM2 log files normally survive an application restart, but that is not a backup 
 If there is no matching event, check the instance and log destination, whether logging was enabled, and whether a proxy rejected the request before it reached Fastify. Browser-only validation creates no server event. Correlate browser time with server time carefully; clocks and time zones can differ.
 
 ## Deployment conventions
+
+For tested-commit releases and GitHub Actions setup, see [automatic deployment](docs/DEPLOYMENT.md) ([简体中文](docs/DEPLOYMENT.zh-CN.md)). Automatic deployment is off until an operator verifies the host and explicitly enables its configuration; adding the workflow alone does not deploy or grant access.
 
 The repository documents this deployment layout for `rende.fun`; these settings do not verify the state or version of a running deployment.
 
