@@ -83,6 +83,7 @@ test("GET /shutter/api/health -> 200 with exiftool version", async () => {
   const body = res.json();
   assert.equal(body.status, "ok");
   assert.match(body.exiftool, /^\d+\.\d+/);
+  assert.ok(body.revision === null || /^[a-f0-9]{40}$/.test(body.revision));
 });
 
 test("GET /shutter -> 308 redirect to /shutter/", async () => {
