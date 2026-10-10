@@ -70,7 +70,23 @@ production 环境变量：
 
 服务器发布成功后，runner 的最终公网检查仍可能因网络失败。此时工作流失败，但不会启动第二次并发回滚。重试前先查实际 revision、路由、TLS 和 runner 网络，不能把失败自动理解为已经回退。
 
-服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
+服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。若失败发生在该日志创建之前（授权、git ls-remote、git fetch），接收器会向 /opt/shutter-count/receive-failures.log 追加一行（时间戳、releaseId、阶段、脱敏错误）。GitHub Actions 的 SSH 客户端故意不转发远端 stderr；当提示 “not confirmed” 时，请先在主机查看 receive-failures.log。接收器对 git 使用 180 秒单次超时（杭州到 GitHub 偶发峰值会超过原先 120 秒）、HTTP 低速/连接限制，并对瞬时传输失败最多再重试两次（主分支已前进等确定性失败不重试）。
+
+重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
+
+### 更新已安装的接收器（需人工）
+
+合并本仓库不会自动替换 /usr/local/libexec/shutter-count/。若审阅通过的合并改动了 scripts/receive-deploy.mjs、scripts/deploy-release.sh 或 scripts/check-deploy.mjs，管理员须显式将已审阅文件安装到可信目录（保持 root 拥有与既有信任边界），例如：
+
+```bash
+# 在 ECS 上以 root 执行，并先核验已合并提交 SHA：
+install -o root -g root -m 0755 /path/to/reviewed/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
+install -o root -g root -m 0755 /path/to/reviewed/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+# 核验属主/权限后，再做拒绝用例与一次真实发布验证。
+```
+
+不要从未审阅检出或应用 current 树覆盖生产接收器。应用自动发布路径与该控制面更新彼此独立。
 
 ## 安全边界
 

@@ -29,7 +29,14 @@ const GIT_OPTIONS = [
   "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
   "-c", "core.attributesFile=/dev/null", "-c", "http.followRedirects=false",
   "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+  // Hangzhou→GitHub HTTP can stall; fail bounded transfers instead of hanging forever.
+  "-c", "http.connectTimeout=30", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60",
 ];
+// execFile timeout for git/tar: 120s was tight during Hangzhou→GitHub spikes; keep bounded.
+export const GIT_COMMAND_TIMEOUT_MS = 180_000;
+export const GIT_RETRY_ATTEMPTS = 3; // initial attempt + up to two retries
+export const GIT_RETRY_DELAYS_MS = Object.freeze([2_000, 5_000]);
+export const FAILURE_LOG_PATH = `${EXPECTED_CONFIG.root}/receive-failures.log`;
 
 export function parseCommand(command) {
   // A dollar anchor alone accepts a final newline. This anchor accepts nothing.
@@ -131,6 +138,7 @@ export function deploymentEnvironment(config = EXPECTED_CONFIG) {
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "/usr/bin/false",
     SSH_ASKPASS: "/usr/bin/false", GIT_SSH_COMMAND: "/usr/bin/false",
+    GIT_HTTP_CONNECTTIMEOUT: "30", GIT_HTTP_LOW_SPEED_LIMIT: "1000", GIT_HTTP_LOW_SPEED_TIME: "60",
   };
 }
 
@@ -171,15 +179,72 @@ async function checkHostInstallation() {
   }
 }
 
-export function executeCommand(executable, args, options) {
+export function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export function isTransientGitFailure(error) {
+  const message = String(error?.message ?? error ?? "");
+  return /timed out|Host source verification failed|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|ECONNREFUSED/i.test(message);
+}
+
+/** Best-effort host-side breadcrumb when GHA withholds SSH stderr. Never logs secrets or raw child output. */
+export async function appendFailureLog(entry, { fileSystem = fs, logPath = FAILURE_LOG_PATH } = {}) {
+  const releaseId = typeof entry?.releaseId === "string" &&
+    /^[a-f0-9]{40}-[1-9][0-9]*-[1-9][0-9]*(?![\s\S])/.test(entry.releaseId)
+    ? entry.releaseId : "unknown";
+  const stage = typeof entry?.stage === "string" && /^[a-z0-9._-]{1,64}$/i.test(entry.stage)
+    ? entry.stage : "unknown";
+  const error = String(entry?.error?.message ?? entry?.error ?? "unknown")
+    .replace(/[\r\n\0]/g, " ").slice(0, 500);
+  const line = `${new Date().toISOString()}\treleaseId=${releaseId}\tstage=${stage}\terror=${error}\n`;
+  try {
+    if (typeof fileSystem.appendFile === "function") {
+      await fileSystem.appendFile(logPath, line, { encoding: "utf8", mode: 0o600, flag: "a" });
+      return;
+    }
+    const handle = await fileSystem.open(logPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+    try { await handle.writeFile(line); } finally { await handle.close(); }
+  } catch {
+    // Logging must never mask the original deployment failure.
+  }
+}
+
+export async function runWithRetries(operation, {
+  attempts = GIT_RETRY_ATTEMPTS, delaysMs = GIT_RETRY_DELAYS_MS, wait = sleep, shouldRetry = isTransientGitFailure,
+} = {}) {
+  if (!Number.isSafeInteger(attempts) || attempts < 1) throw new Error("Invalid retry configuration");
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { return await operation(attempt); }
+    catch (error) {
+      lastError = error;
+      if (attempt + 1 >= attempts || !shouldRetry(error)) throw error;
+      await wait(delaysMs[Math.min(attempt, delaysMs.length - 1)] ?? delaysMs[delaysMs.length - 1]);
+    }
+  }
+  throw lastError;
+}
+
+export function executeCommand(executable, args, options = {}) {
+  const timeout = Number.isSafeInteger(options.timeout) && options.timeout > 0
+    ? options.timeout : GIT_COMMAND_TIMEOUT_MS;
+  const { timeout: _ignored, ...rest } = options;
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { ...options, encoding: "utf8", timeout: 120000, maxBuffer: 1024 * 1024 },
-      (error, stdout) => error ? reject(new Error("Host source verification failed")) : resolve(stdout));
+    execFile(executable, args, { ...rest, encoding: "utf8", timeout, maxBuffer: 1024 * 1024 },
+      (error, stdout) => {
+        if (!error) return resolve(stdout);
+        const timedOut = Boolean(error.killed) || error.signal === "SIGTERM" ||
+          /ETIMEDOUT|timed out|TIMEOUT/i.test(String(error.message ?? ""));
+        reject(new Error(timedOut ? "Host source verification timed out" : "Host source verification failed"));
+      });
   });
 }
 
-export async function verifyCurrentMain(command, runCommand, env) {
-  const output = await runCommand("/usr/bin/git", [...GIT_OPTIONS, "ls-remote", "--exit-code", REPOSITORY_URL, "refs/heads/main"], { env, cwd: "/" });
+export async function verifyCurrentMain(command, runCommand, env, { retry = runWithRetries } = {}) {
+  const output = await retry(() => runCommand("/usr/bin/git",
+    [...GIT_OPTIONS, "ls-remote", "--exit-code", REPOSITORY_URL, "refs/heads/main"], { env, cwd: "/" }));
   if (output !== `${command.sha}\trefs/heads/main\n`) throw new Error("Requested commit is no longer current main");
 }
 
@@ -265,15 +330,36 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
   const fileSystem = dependencies.fileSystem ?? fs;
   const runCommand = dependencies.runCommand ?? executeCommand;
   const deploy = dependencies.deploy ?? spawnDeployment;
+  const retry = dependencies.retry ?? runWithRetries;
+  const recordFailure = dependencies.recordFailure ??
+    (entry => appendFailureLog(entry, { fileSystem }));
   const signals = installSignalGuard(dependencies.signalSource ?? process);
   let temp;
   let deploymentCompleted = false;
   let failure;
+  let stage = "startup";
+  const stageError = (name, error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    const wrapped = new Error(`Deployment failed during ${name}: ${detail}`);
+    wrapped.stage = name;
+    return wrapped;
+  };
   try {
-    await authorizeDeployment(command, dependencies.request ?? globalThis.fetch);
+    stage = "authorize";
+    try {
+      await authorizeDeployment(command, dependencies.request ?? globalThis.fetch);
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
-    await verifyCurrentMain(command, runCommand, gateEnv);
+    stage = "ls-remote";
+    try {
+      await verifyCurrentMain(command, runCommand, gateEnv, { retry });
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
+    stage = "prepare-temp";
     temp = await fileSystem.mkdtemp("/tmp/shutter-count-deploy-");
     await fileSystem.chmod(temp, 0o700);
     const gitDirectory = path.join(temp, "repository.git");
@@ -281,13 +367,23 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
     const archive = path.join(temp, "source.tar");
     await fileSystem.mkdir(source, { mode: 0o700 });
     const git = args => runCommand("/usr/bin/git", [...GIT_OPTIONS, ...args], { env: gateEnv, cwd: temp });
+    stage = "git-init";
     await git(["init", "--bare", gitDirectory]);
     signals.assertActive();
-    await git(["--git-dir", gitDirectory, "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", REPOSITORY_URL, command.sha]);
+    stage = "git-fetch";
+    try {
+      await retry(() => git(["--git-dir", gitDirectory, "fetch", "--depth=1", "--no-tags",
+        "--no-recurse-submodules", REPOSITORY_URL, command.sha]));
+    } catch (error) {
+      throw stageError(stage, error);
+    }
+    stage = "rev-parse";
     const fetched = await git(["--git-dir", gitDirectory, "rev-parse", "--verify", "FETCH_HEAD^{commit}"]);
     if (fetched !== `${command.sha}\n`) throw new Error("Fetched source does not match the requested commit");
     signals.assertActive();
+    stage = "archive";
     await git(["--git-dir", gitDirectory, "archive", "--format=tar", "--output", archive, command.sha]);
+    stage = "extract";
     await runCommand("/usr/bin/tar", ["-xf", archive, "--directory", source, "--no-same-owner", "--no-same-permissions"], { env: gateEnv, cwd: temp });
     for (const forbidden of [".git", "node_modules"]) {
       try {
@@ -301,12 +397,27 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
     signals.assertActive();
     // No preparation or external decision happens between this check and the
     // trusted deploy script. That script owns the activation/rollback flock.
-    await verifyCurrentMain(command, runCommand, gateEnv);
+    stage = "ls-remote-pre-activate";
+    try {
+      await verifyCurrentMain(command, runCommand, gateEnv, { retry });
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
+    stage = "activate";
     await deploy([source, config.root, command.sha, command.releaseId, config.localUrl, config.publicUrl], { env, signals });
     deploymentCompleted = true;
   } catch (error) {
     failure = error;
+    try {
+      await recordFailure({
+        releaseId: command.releaseId,
+        stage: error?.stage ?? stage,
+        error,
+      });
+    } catch {
+      // Failure logging must never replace the original deployment error.
+    }
   } finally {
     if (temp) {
       try { await fileSystem.rm(temp, { recursive: true, force: true }); }
@@ -330,7 +441,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`Deployed shutter-count ${result.sha}`);
   } catch {
     // SSH input, third-party output and low-level errors are never reflected.
-    console.error("Deployment receiver stopped; inspect the host deployment state before retrying.");
+    // Stage detail is written to receive-failures.log for operators; GHA withholds stderr.
+    console.error("Deployment receiver stopped; inspect /opt/shutter-count/receive-failures.log and deploy-*.log before retrying.");
     process.exitCode = 1;
   }
 }

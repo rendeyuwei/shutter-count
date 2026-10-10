@@ -4,9 +4,11 @@ import { EventEmitter } from "node:events";
 import { constants } from "node:fs";
 import {
   CONFIG_PATH, DEPLOY_SCRIPT, EXPECTED_CONFIG, TRUSTED_DIRECTORY, RECEIVER_NODE,
+  FAILURE_LOG_PATH, GIT_COMMAND_TIMEOUT_MS, GIT_RETRY_ATTEMPTS, GIT_RETRY_DELAYS_MS,
   parseCommand, validateConfig, validateIdentity, validateRun, validateJobs,
   validateAuthorization, authorizeDeployment, deploymentEnvironment, verificationEnvironment,
   assertRootOwnedPath, receiveDeployment, spawnDeployment,
+  appendFailureLog, runWithRetries, isTransientGitFailure,
 } from "../scripts/receive-deploy.mjs";
 
 const sha = "a".repeat(40);
@@ -205,6 +207,9 @@ test("child environment is allowlisted and never copies client-supplied settings
   assert.equal(env.GIT_CONFIG_GLOBAL, "/dev/null");
   assert.equal(env.GIT_CONFIG_SYSTEM, "/dev/null");
   assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(env.GIT_HTTP_CONNECTTIMEOUT, "30");
+  assert.equal(env.GIT_HTTP_LOW_SPEED_LIMIT, "1000");
+  assert.equal(env.GIT_HTTP_LOW_SPEED_TIME, "60");
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_ORIGINAL_COMMAND", "NODE_OPTIONS", "BASH_ENV", "LD_PRELOAD", "HTTPS_PROXY", "DEPLOY_ROOT"])
     assert.equal(Object.hasOwn(env, name), false, name);
 });
@@ -436,6 +441,113 @@ test("successful child output goes only to the persistent host log and closes af
   assert.equal(f.removals.length, 1);
 });
 
+
+
+test("git command timeout is bounded above the prior 120s Hangzhou spike ceiling", () => {
+  assert.equal(GIT_COMMAND_TIMEOUT_MS, 180_000);
+  assert.equal(GIT_RETRY_ATTEMPTS, 3);
+  assert.deepEqual([...GIT_RETRY_DELAYS_MS], [2_000, 5_000]);
+  assert.equal(FAILURE_LOG_PATH, "/opt/shutter-count/receive-failures.log");
+});
+
+test("transient git failures are retried with backoff; deterministic mismatches are not", async () => {
+  assert.equal(isTransientGitFailure(new Error("Host source verification timed out")), true);
+  assert.equal(isTransientGitFailure(new Error("Host source verification failed")), true);
+  assert.equal(isTransientGitFailure(new Error("Requested commit is no longer current main")), false);
+  const delays = [];
+  let attempts = 0;
+  await assert.rejects(runWithRetries(async () => {
+    attempts++;
+    throw new Error("Host source verification timed out");
+  }, { attempts: 3, delaysMs: [1, 2], wait: ms => { delays.push(ms); return Promise.resolve(); } }), /timed out/);
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1, 2]);
+  attempts = 0;
+  await assert.rejects(runWithRetries(async () => {
+    attempts++;
+    throw new Error("Requested commit is no longer current main");
+  }, { attempts: 3, delaysMs: [1, 2], wait: () => assert.fail("must not delay") }), /no longer current main/);
+  assert.equal(attempts, 1);
+});
+
+test("appendFailureLog writes a single sanitized line and never throws", async () => {
+  const writes = [];
+  await appendFailureLog(
+    { releaseId: command.releaseId, stage: "git-fetch", error: new Error("Host source verification timed out\nSECRET") },
+    { fileSystem: { appendFile: async (filename, line, options) => { writes.push({ filename, line, options }); } },
+      logPath: "/tmp/receive-failures.test.log" },
+  );
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].filename, "/tmp/receive-failures.test.log");
+  assert.equal(writes[0].options.flag, "a");
+  assert.match(writes[0].line, new RegExp(`^\\d{4}-.+\treleaseId=${command.releaseId}\tstage=git-fetch\terror=Host source verification timed out SECRET\n$`));
+  assert.ok(!writes[0].line.includes("\nSECRET"));
+  await appendFailureLog({ releaseId: "bad", stage: "x;rm", error: "ok" }, {
+    fileSystem: { appendFile: async () => { throw new Error("disk full"); } },
+  });
+});
+
+test("pre-git failures record stage breadcrumbs without creating deploy logs", async () => {
+  const failures = [];
+  const f = fixture({
+    runCommand: async () => { throw new Error("Host source verification timed out"); },
+    recordFailure: async entry => { failures.push(entry); },
+    retry: (operation, options = {}) => runWithRetries(operation, {
+      ...options, delaysMs: [0, 0], wait: () => Promise.resolve(),
+    }),
+  });
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /ls-remote.*timed out/);
+  assert.equal(f.deployments.length, 0);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].stage, "ls-remote");
+  assert.equal(failures[0].releaseId, command.releaseId);
+  assert.match(String(failures[0].error.message ?? failures[0].error), /timed out/);
+});
+
+test("git fetch retries transient failures then records the stage on exhaustion", async () => {
+  const failures = [];
+  const f = fixture();
+  const run = f.dependencies.runCommand;
+  let fetchCalls = 0;
+  const delays = [];
+  f.dependencies.retry = (operation, options = {}) => runWithRetries(operation, {
+    ...options, delaysMs: [0, 0], wait: ms => { delays.push(ms); return Promise.resolve(); },
+  });
+  f.dependencies.recordFailure = async entry => { failures.push(entry); };
+  f.dependencies.runCommand = async (...args) => {
+    if (args[1].includes("fetch")) {
+      fetchCalls++;
+      throw new Error("Host source verification failed");
+    }
+    return run(...args);
+  };
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /git-fetch/);
+  assert.equal(fetchCalls, GIT_RETRY_ATTEMPTS);
+  assert.equal(delays.length, GIT_RETRY_ATTEMPTS - 1);
+  assert.equal(f.deployments.length, 0);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].stage, "git-fetch");
+  assert.equal(f.removals.length, 1);
+});
+
+test("stale main is not retried as a transport failure", async () => {
+  const f = fixture();
+  let lsRemoteCalls = 0;
+  const run = f.dependencies.runCommand;
+  f.dependencies.retry = (operation, options = {}) => runWithRetries(operation, {
+    ...options, delaysMs: [0, 0], wait: () => assert.fail("must not delay on stale main"),
+  });
+  f.dependencies.runCommand = async (...args) => {
+    if (args[1].includes("ls-remote")) {
+      lsRemoteCalls++;
+      return `${otherSha}\trefs/heads/main\n`;
+    }
+    return run(...args);
+  };
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /no longer current main/);
+  assert.equal(lsRemoteCalls, 1);
+  assert.equal(f.deployments.length, 0);
+});
 
 test("verification gate uses a protected interpreter and system-only tool PATH", () => {
   assert.equal(RECEIVER_NODE, "/usr/local/libexec/shutter-count/receive-node");
