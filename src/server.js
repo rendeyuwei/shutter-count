@@ -404,11 +404,13 @@ function isInvokedDirectly() {
 
 // PM2 / some launchers may not satisfy the argv[1] realpath equality check
 // (e.g. when the script is loaded through a wrapper). Treat known process
-// managers as a direct start, and always allow an explicit override.
+// manager process IDs as a direct start, and allow an explicit override.
+// PM2_HOME only selects PM2 state; deployment tools/tests may inherit it
+// without being app processes, so it must not turn an import into a listener.
 function shouldListen() {
   if (process.env.SHUTTER_NO_LISTEN === "1") return false;
   if (process.env.SHUTTER_FORCE_LISTEN === "1") return true;
-  if (process.env.pm_id !== undefined || process.env.PM2_HOME) return true;
+  if (process.env.pm_id !== undefined) return true;
   return isInvokedDirectly();
 }
 

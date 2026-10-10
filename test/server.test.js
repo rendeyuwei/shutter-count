@@ -259,7 +259,8 @@ test("buildApp honors trustProxy option without breaking health", async () => {
   assert.equal(res.statusCode, 200);
 });
 
-test("server starts and answers health when invoked via a symlinked path", async () => {
+for (const entrypoint of ["src/server.js", "bin/start.mjs"]) {
+test(`server starts and answers health via a symlinked ${entrypoint}`, async () => {
   // Mirrors the deploy layout: /opt/shutter-count/current -> releases/<id>.
   // Node resolves the main module's realpath, so the invokedDirectly check
   // must realpath process.argv[1] or the server silently does nothing.
@@ -270,7 +271,7 @@ test("server starts and answers health when invoked via a symlinked path", async
   const port = 40000 + Math.floor(Math.random() * 10000); // 40000-49999
   const child = spawn(
     process.execPath,
-    [path.join(link, "src", "server.js")],
+    [path.join(link, entrypoint)],
     {
       cwd: tmp,
       detached: true, // own process group so we can kill exiftool children too
@@ -344,6 +345,8 @@ test("server starts and answers health when invoked via a symlinked path", async
     await fsp.rm(tmp, { recursive: true, force: true });
   }
 });
+
+}
 
 test("cleanupStaleTmpDirs removes only shuttercount-* dirs older than 10 min", async () => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "sc-cleanup-test-"));
