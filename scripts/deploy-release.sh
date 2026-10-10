@@ -111,7 +111,22 @@ printf '%s\n' "$revision" > "$release/REVISION"
 )
 # Recheck after dependency installation/tests, immediately before activation.
 # The receiver also checks before fetching. Never activate an obsolete main.
-latest=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 timeout --signal=TERM --kill-after=5s 60s git ls-remote --exit-code https://github.com/rendeyuwei/shutter-count.git refs/heads/main)
+# Bounded HTTP timeouts + retries: Hangzhou→GitHub spikes should not hang forever.
+latest=
+for attempt in 1 2 3; do
+  if latest=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
+      GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=60 \
+      timeout --signal=TERM --kill-after=5s 90s \
+      git -c http.connectTimeout=30 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+      -c credential.helper= -c core.hooksPath=/dev/null \
+      -c protocol.allow=never -c protocol.https.allow=always \
+      -c http.followRedirects=false \
+      ls-remote --exit-code https://github.com/rendeyuwei/shutter-count.git refs/heads/main); then
+    break
+  fi
+  latest=
+  (( attempt < 3 )) && sleep $(( attempt * 2 ))
+done
 [[ "$latest" == "$revision"$'\trefs/heads/main' ]] || die 'main advanced or could not be verified; release not activated'
 switched=1
 switch_to "$release"

@@ -70,7 +70,23 @@ The workflow has `contents: read`, pinned official checkout/setup actions, no pe
 
 The final runner-side public check can fail even after the server completed successfully. It reports failure without launching a second racing rollback. Inspect the current revision, routing, TLS and runner connectivity before retrying. Do not infer failure means production reverted.
 
-Server release output is retained in `/opt/shutter-count/deploy-<release-id>.log` without relaying it to the runner. When retrying CI, rerun the full workflow so the same attempt contains a successful test job. A failed activation logs rollback to `/opt/shutter-count/rollback-<release-id>.log`. If it reports `CRITICAL`, inspect current, PM2 and health before another release. Disconnect/HUP/TERM recovery is tested, but SIGKILL, power loss or storage failure can prevent rollback. Keep previous versions until validated; no automatic pruning is performed. Disable future releases by setting `SHUTTER_DEPLOY_ENABLED=false`; this does not cancel an already running server deployment.
+Server release output is retained in `/opt/shutter-count/deploy-<release-id>.log` without relaying it to the runner. Failures **before** that log exists (authorize, `git ls-remote`, `git fetch`) append a one-line breadcrumb to `/opt/shutter-count/receive-failures.log` with timestamp, `releaseId`, stage and a redacted error. The GitHub Actions SSH client intentionally withholds remote stderr; when it reports that deployment was not confirmed, check `receive-failures.log` on the host first. Receiver git calls use a **180s** per-attempt timeout (Hangzhou→GitHub spikes exceeded the previous 120s bound), HTTP low-speed/connect limits, and up to two retries with backoff on transient transport failures only—not on “main advanced” mismatches.
+
+When retrying CI, rerun the full workflow so the same attempt contains a successful test job. A failed activation logs rollback to `/opt/shutter-count/rollback-<release-id>.log`. If it reports `CRITICAL`, inspect current, PM2 and health before another release. Disconnect/HUP/TERM recovery is tested, but SIGKILL, power loss or storage failure can prevent rollback. Keep previous versions until validated; no automatic pruning is performed. Disable future releases by setting `SHUTTER_DEPLOY_ENABLED=false`; this does not cancel an already running server deployment.
+
+### Updating the installed receiver (manual)
+
+Merging this repository does **not** replace `/usr/local/libexec/shutter-count/`. After a reviewed merge that changes `scripts/receive-deploy.mjs`, `scripts/deploy-release.sh` or `scripts/check-deploy.mjs`, an administrator must explicitly copy the reviewed files into the trusted directory (root-owned, mode preserving the existing trust boundary), for example:
+
+```bash
+# On the ECS host, as root, after verifying the merged commit SHA:
+install -o root -g root -m 0755 /path/to/reviewed/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
+install -o root -g root -m 0755 /path/to/reviewed/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+# Confirm ownership/mode, then exercise a dry rejection and one real release.
+```
+
+Do not overwrite the production receiver from an unreviewed checkout or from the application `current` tree. Auto-deploy of the app release path remains separate from this control-plane update.
 
 ## Security boundary
 

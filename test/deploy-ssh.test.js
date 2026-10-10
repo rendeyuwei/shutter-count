@@ -222,6 +222,7 @@ test("uncertain or failed SSH is never retried, verified, rolled back, or allowe
     f.options.run = async (...args) => { f.calls.push(args); throw error; };
     await assert.rejects(deploySsh(env, f.options), result => {
       assert.match(safeErrorMessage(result), /not confirmed and was not retried/);
+      assert.match(safeErrorMessage(result), /receive-failures\.log/);
       assert.ok(!result.stack.includes(secret));
       assert.ok(!result.stack.includes(privateKey));
       assert.equal(result.cause, undefined);
