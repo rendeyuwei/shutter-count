@@ -455,6 +455,7 @@ test("uncertain or failed SSH is never retried, verified, rolled back, or allowe
         safeErrorMessage(result),
         /not confirmed and was not retried/
       );
+      assert.match(safeErrorMessage(result), /receive-failures\.log/);
       assert.ok(!result.stack!.includes(secret));
       assert.ok(!result.stack!.includes(privateKey));
       assert.equal(result.cause, undefined);

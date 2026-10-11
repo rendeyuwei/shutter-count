@@ -3,6 +3,7 @@
 // SSH supplies only a commit/run/attempt tuple, never code, paths or settings.
 import { execFile, spawn } from "node:child_process";
 import { isRecord, errorField } from "../shared/protocol.js";
+import { decodeMainRef } from "../shared/deploy.js";
 import type { EventEmitter } from "node:events";
 import type { ChildPort, SpawnProcess } from "./deploy-ssh.js";
 import { constants } from "node:fs";
@@ -35,13 +36,14 @@ export type HostConfig = typeof EXPECTED_CONFIG;
 export interface CommandOptions {
   env: NodeJS.ProcessEnv;
   cwd: string;
+  timeout?: number;
 }
 export type RunCommand = (
   executable: string,
   args: string[],
   options: CommandOptions
 ) => Promise<string>;
-export interface SourceFileSystem {
+export interface SourceFileSystem extends FailureLogFileSystem {
   mkdtemp: (prefix: string) => Promise<string>;
   chmod: (filename: string, mode: number) => Promise<void>;
   mkdir: (filename: string, options: { mode: number }) => Promise<unknown>;
@@ -51,6 +53,36 @@ export interface SourceFileSystem {
     options: { recursive: boolean; force: boolean }
   ) => Promise<void>;
 }
+export interface FailureEntry {
+  releaseId: string;
+  stage: string;
+  error: unknown;
+}
+export interface FailureLogFileSystem {
+  appendFile?: (
+    filename: string,
+    line: string,
+    options: { encoding: "utf8"; mode: number; flag: "a" }
+  ) => Promise<unknown>;
+  open?: (
+    filename: string,
+    flags: number,
+    mode: number
+  ) => Promise<{
+    writeFile: (line: string) => Promise<unknown>;
+    close: () => Promise<void>;
+  }>;
+}
+export interface RetryOptions {
+  attempts?: number;
+  delaysMs?: readonly number[];
+  wait?: (ms: number) => Promise<void>;
+  shouldRetry?: (error: unknown) => boolean;
+}
+export type Retry = <T>(
+  operation: (attempt: number) => Promise<T>,
+  options?: RetryOptions
+) => Promise<T>;
 export interface TrustFileSystem {
   lstat: (filename: string) => Promise<{
     uid: number;
@@ -91,6 +123,8 @@ export interface ReceiverDependencies {
   deploy?: (args: string[], options: DeploymentOptions) => Promise<void>;
   signalSource?: EventEmitter;
   request?: PublicRequest;
+  retry?: Retry;
+  recordFailure?: (entry: FailureEntry) => Promise<unknown>;
 }
 export interface SignalGuard {
   assertActive: () => void;
@@ -101,6 +135,18 @@ export interface SignalGuard {
 
 const REPOSITORY_URL = `https://github.com/${EXPECTED_CONFIG.repository}.git`;
 const API_BASE = `https://api.github.com/repos/${EXPECTED_CONFIG.repository}/actions/runs`;
+export const MAIN_REF_URL = `https://api.github.com/repos/${EXPECTED_CONFIG.repository}/git/ref/heads/main`;
+const TRANSIENT_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const PERMANENT_COMMAND_CODES = new Set([
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+]);
+export const GIT_COMMAND_TIMEOUT_MS = 180_000;
+export const GIT_RETRY_ATTEMPTS = 3;
+export const GIT_RETRY_DELAYS_MS = Object.freeze([2_000, 5_000]);
+export const FAILURE_LOG_PATH = `${EXPECTED_CONFIG.root}/receive-failures.log`;
 const SIGNALS: NodeJS.Signals[] = ["SIGHUP", "SIGINT", "SIGTERM"];
 const GIT_OPTIONS = [
   "-c",
@@ -115,6 +161,12 @@ const GIT_OPTIONS = [
   "protocol.allow=never",
   "-c",
   "protocol.https.allow=always",
+  "-c",
+  "http.connectTimeout=30",
+  "-c",
+  "http.lowSpeedLimit=1000",
+  "-c",
+  "http.lowSpeedTime=20",
 ];
 
 export function parseCommand(command: unknown): Command {
@@ -233,6 +285,55 @@ export function validateAuthorization(
   validateJobs(jobs, command);
 }
 
+class PublicGithubError extends Error {
+  constructor(readonly transient: boolean) {
+    super(
+      transient
+        ? "Public GitHub deployment verification timed out"
+        : "Public GitHub deployment verification failed"
+    );
+  }
+}
+
+export class HostCommandError extends Error {
+  readonly retryable: boolean;
+
+  constructor(kind: "timeout" | "transport" | "permanent") {
+    super(
+      kind === "timeout"
+        ? "Host source verification timed out"
+        : "Host source verification failed"
+    );
+    this.retryable = kind !== "permanent";
+  }
+}
+
+function isTransientGitDiagnostic(stderr: string): boolean {
+  // Inspect bounded transport signatures, then discard the original output.
+  const diagnostic = stderr.slice(0, 16_384);
+  return (
+    /^fatal: unable to access '[^\r\n]*': (?:Could not resolve host:|Failed to connect to |Connection timed out|Operation timed out|Recv failure: Connection reset by peer|Send failure: Connection reset by peer|Empty reply from server|The requested URL returned error: (?:408|429|500|502|503|504)(?:\s|$)|(?:OpenSSL|LibreSSL) SSL_connect: SSL_ERROR_SYSCALL|GnuTLS recv error \(-(54|110)\):)/im.test(
+      diagnostic
+    ) ||
+    /^error: RPC failed; curl (?:5|6|7|18|28|35|52|55|56|92) [^\r\n]*$/im.test(
+      diagnostic
+    )
+  );
+}
+
+function isTransientTransport(error: unknown): boolean {
+  const name = String(errorField(error, "name") ?? "");
+  if (name === "TimeoutError" || name === "AbortError") return true;
+  const code = String(
+    errorField(error, "code") ??
+      errorField(errorField(error, "cause"), "code") ??
+      ""
+  );
+  return /ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|ECONNABORTED/i.test(
+    code
+  );
+}
+
 async function fetchPublicJson(
   url: string,
   request: PublicRequest
@@ -250,19 +351,29 @@ async function fetchPublicJson(
         "User-Agent": "shutter-count-deploy-receiver",
       },
     });
+    if (TRANSIENT_HTTP_STATUS.has(response?.status))
+      throw new PublicGithubError(true);
     if (
+      !response ||
       response.status !== 200 ||
       response.redirected ||
       (response.url && response.url !== url)
     )
-      throw new Error();
+      throw new PublicGithubError(false);
     const text = await response.text();
-    if (text.length > 2 * 1024 * 1024) throw new Error();
+    if (text.length > 2 * 1024 * 1024) throw new PublicGithubError(false);
     return JSON.parse(text);
-  } catch {
+  } catch (error) {
     // Never echo API response bodies, request errors or ambient credentials.
-    throw new Error("Public GitHub deployment verification failed");
+    if (error instanceof PublicGithubError) throw error;
+    throw new PublicGithubError(isTransientTransport(error));
   }
+}
+
+export function mainShaFromRef(body: unknown): string {
+  const sha = decodeMainRef(body);
+  if (sha === null) throw new PublicGithubError(false);
+  return sha;
 }
 
 export async function authorizeDeployment(
@@ -298,6 +409,9 @@ export function deploymentEnvironment(config = EXPECTED_CONFIG) {
     GIT_ASKPASS: "/usr/bin/false",
     SSH_ASKPASS: "/usr/bin/false",
     GIT_SSH_COMMAND: "/usr/bin/false",
+    GIT_HTTP_CONNECTTIMEOUT: "30",
+    GIT_HTTP_LOW_SPEED_LIMIT: "1000",
+    GIT_HTTP_LOW_SPEED_TIME: "20",
   };
 }
 
@@ -360,20 +474,136 @@ async function checkHostInstallation() {
   }
 }
 
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isTransientGitFailure(error: unknown): boolean {
+  if (error instanceof PublicGithubError) return error.transient;
+  if (error instanceof HostCommandError) return error.retryable;
+  // Retain transport-shaped injected failures; a generic failure is permanent.
+  const message = String(errorField(error, "message") ?? error ?? "");
+  return (
+    isTransientTransport(error) ||
+    /timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|ECONNREFUSED/i.test(
+      message
+    )
+  );
+}
+
+/** Best-effort host breadcrumb; command/API adapters redact external output. */
+export async function appendFailureLog(
+  entry: FailureEntry,
+  {
+    fileSystem = fs,
+    logPath = FAILURE_LOG_PATH,
+  }: {
+    fileSystem?: FailureLogFileSystem;
+    logPath?: string;
+  } = {}
+) {
+  const releaseId =
+    typeof entry.releaseId === "string" &&
+    /^[a-f0-9]{40}-[1-9][0-9]*-[1-9][0-9]*(?![\s\S])/.test(entry.releaseId)
+      ? entry.releaseId
+      : "unknown";
+  const stage =
+    typeof entry.stage === "string" && /^[a-z0-9._-]{1,64}$/i.test(entry.stage)
+      ? entry.stage
+      : "unknown";
+  const error = String(
+    errorField(entry.error, "message") ?? entry.error ?? "unknown"
+  )
+    .replace(/[\r\n\0]/g, " ")
+    .slice(0, 500);
+  const line = `${new Date().toISOString()}\treleaseId=${releaseId}\tstage=${stage}\terror=${error}\n`;
+  try {
+    if (fileSystem.appendFile) {
+      await fileSystem.appendFile(logPath, line, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "a",
+      });
+      return;
+    }
+    if (!fileSystem.open) return;
+    const handle = await fileSystem.open(
+      logPath,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_APPEND |
+        constants.O_NOFOLLOW,
+      0o600
+    );
+    try {
+      await handle.writeFile(line);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Logging must never mask the original deployment failure.
+  }
+}
+
+export async function runWithRetries<T>(
+  operation: (attempt: number) => Promise<T>,
+  {
+    attempts = GIT_RETRY_ATTEMPTS,
+    delaysMs = GIT_RETRY_DELAYS_MS,
+    wait = sleep,
+    shouldRetry = isTransientGitFailure,
+  }: RetryOptions = {}
+): Promise<T> {
+  if (!Number.isSafeInteger(attempts) || attempts < 1)
+    throw new Error("Invalid retry configuration");
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 >= attempts || !shouldRetry(error)) throw error;
+      await wait(
+        delaysMs[Math.min(attempt, delaysMs.length - 1)] ?? delaysMs.at(-1) ?? 0
+      );
+    }
+  }
+  throw lastError;
+}
+
 export function executeCommand(
   executable: string,
   args: string[],
   options: CommandOptions
 ): Promise<string> {
+  const timeout =
+    typeof options.timeout === "number" &&
+    Number.isSafeInteger(options.timeout) &&
+    options.timeout > 0
+      ? options.timeout
+      : GIT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     execFile(
       executable,
       args,
-      { ...options, encoding: "utf8", timeout: 120000, maxBuffer: 1024 * 1024 },
-      (error, stdout) =>
-        error
-          ? reject(new Error("Host source verification failed"))
-          : resolve(stdout)
+      { ...options, encoding: "utf8", timeout, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (!error) return resolve(stdout);
+        const timedOut =
+          error.code === "ETIMEDOUT" ||
+          (error.killed &&
+            error.signal === "SIGTERM" &&
+            error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+        const permanentCode = PERMANENT_COMMAND_CODES.has(String(error.code));
+        const transient =
+          !permanentCode &&
+          (isTransientTransport(error) || isTransientGitDiagnostic(stderr));
+        reject(
+          new HostCommandError(
+            timedOut ? "timeout" : transient ? "transport" : "permanent"
+          )
+        );
+      }
     );
   });
 }
@@ -381,18 +611,54 @@ export function executeCommand(
 export async function verifyCurrentMain(
   command: Command,
   runCommand: RunCommand,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  {
+    retry = runWithRetries,
+    request = globalThis.fetch,
+    recordFallback = async () => {},
+  }: {
+    retry?: Retry;
+    request?: PublicRequest;
+    recordFallback?: (entry: FailureEntry) => Promise<unknown>;
+  } = {}
 ) {
-  const output = await runCommand(
-    "/usr/bin/git",
-    [
-      ...GIT_OPTIONS,
-      "ls-remote",
-      "--exit-code",
-      REPOSITORY_URL,
-      "refs/heads/main",
-    ],
-    { env, cwd: "/" }
+  let current: string | undefined;
+  try {
+    current = mainShaFromRef(
+      await retry(() => fetchPublicJson(MAIN_REF_URL, request))
+    );
+  } catch (error) {
+    try {
+      const detail =
+        error instanceof Error
+          ? error.message
+          : "Public GitHub deployment verification failed";
+      await recordFallback({
+        releaseId: command.releaseId,
+        stage: "main-sha-api",
+        error: new Error(`${detail}; falling back to git ls-remote`),
+      });
+    } catch {
+      /* A breadcrumb failure must not skip the fallback. */
+    }
+  }
+  if (current !== undefined) {
+    if (current !== command.sha)
+      throw new Error("Requested commit is no longer current main");
+    return;
+  }
+  const output = await retry(() =>
+    runCommand(
+      "/usr/bin/git",
+      [
+        ...GIT_OPTIONS,
+        "ls-remote",
+        "--exit-code",
+        REPOSITORY_URL,
+        "refs/heads/main",
+      ],
+      { env, cwd: "/" }
+    )
   );
   if (output !== `${command.sha}\trefs/heads/main\n`)
     throw new Error("Requested commit is no longer current main");
@@ -535,18 +801,43 @@ export async function receiveDeployment(
   const fileSystem = dependencies.fileSystem ?? fs;
   const runCommand = dependencies.runCommand ?? executeCommand;
   const deploy = dependencies.deploy ?? spawnDeployment;
+  const retry = dependencies.retry ?? runWithRetries;
+  const request = dependencies.request ?? globalThis.fetch;
+  const recordFailure =
+    dependencies.recordFailure ??
+    ((entry: FailureEntry) => appendFailureLog(entry, { fileSystem }));
   const signals = installSignalGuard(dependencies.signalSource ?? process);
   let temp: string | undefined;
   let deploymentCompleted = false;
   let failure;
-  try {
-    await authorizeDeployment(
-      command,
-      dependencies.request ?? globalThis.fetch
+  let stage = "startup";
+  const stageError = (name: string, error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    return Object.assign(
+      new Error(`Deployment failed during ${name}: ${detail}`),
+      { stage: name }
     );
+  };
+  try {
+    stage = "authorize";
+    try {
+      await authorizeDeployment(command, request);
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
-    await verifyCurrentMain(command, runCommand, gateEnv);
+    stage = "main-sha";
+    try {
+      await verifyCurrentMain(command, runCommand, gateEnv, {
+        retry,
+        request,
+        recordFallback: recordFailure,
+      });
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
+    stage = "prepare-temp";
     temp = await fileSystem.mkdtemp("/tmp/shutter-count-deploy-");
     await fileSystem.chmod(temp, 0o700);
     const gitDirectory = path.join(temp, "repository.git");
@@ -558,18 +849,27 @@ export async function receiveDeployment(
         env: gateEnv,
         cwd: temp!,
       });
+    stage = "git-init";
     await git(["init", "--bare", gitDirectory]);
     signals.assertActive();
-    await git([
-      "--git-dir",
-      gitDirectory,
-      "fetch",
-      "--depth=1",
-      "--no-tags",
-      "--no-recurse-submodules",
-      REPOSITORY_URL,
-      command.sha,
-    ]);
+    stage = "git-fetch";
+    try {
+      await retry(() =>
+        git([
+          "--git-dir",
+          gitDirectory,
+          "fetch",
+          "--depth=1",
+          "--no-tags",
+          "--no-recurse-submodules",
+          REPOSITORY_URL,
+          command.sha,
+        ])
+      );
+    } catch (error) {
+      throw stageError(stage, error);
+    }
+    stage = "rev-parse";
     const fetched = await git([
       "--git-dir",
       gitDirectory,
@@ -580,6 +880,7 @@ export async function receiveDeployment(
     if (fetched !== `${command.sha}\n`)
       throw new Error("Fetched source does not match the requested commit");
     signals.assertActive();
+    stage = "archive";
     await git([
       "--git-dir",
       gitDirectory,
@@ -589,6 +890,7 @@ export async function receiveDeployment(
       archive,
       command.sha,
     ]);
+    stage = "extract";
     await runCommand(
       "/usr/bin/tar",
       [
@@ -615,8 +917,18 @@ export async function receiveDeployment(
     signals.assertActive();
     // No preparation or external decision happens between this check and the
     // trusted deploy script. That script owns the activation/rollback flock.
-    await verifyCurrentMain(command, runCommand, gateEnv);
+    stage = "main-sha-pre-activate";
+    try {
+      await verifyCurrentMain(command, runCommand, gateEnv, {
+        retry,
+        request,
+        recordFallback: recordFailure,
+      });
+    } catch (error) {
+      throw stageError(stage, error);
+    }
     signals.assertActive();
+    stage = "activate";
     await deploy(
       [
         source,
@@ -631,6 +943,18 @@ export async function receiveDeployment(
     deploymentCompleted = true;
   } catch (error) {
     failure = error;
+    try {
+      await recordFailure({
+        releaseId: command.releaseId,
+        stage:
+          typeof errorField(error, "stage") === "string"
+            ? String(errorField(error, "stage"))
+            : stage,
+        error,
+      });
+    } catch {
+      /* Failure logging must not replace the original error. */
+    }
   } finally {
     if (temp) {
       try {
@@ -662,7 +986,7 @@ if (
   } catch {
     // SSH input, third-party output and low-level errors are never reflected.
     console.error(
-      "Deployment receiver stopped; inspect the host deployment state before retrying."
+      "Deployment receiver stopped; inspect /opt/shutter-count/receive-failures.log and deploy-*.log before retrying."
     );
     process.exitCode = 1;
   }

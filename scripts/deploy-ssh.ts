@@ -56,7 +56,7 @@ export interface DeployOptions {
 
 const SIGNALS = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
 const SSH_FAILURE =
-  "SSH deployment was not confirmed and was not retried. Remote work may still be running; inspect the server before rerunning. Diagnostic output was withheld.";
+  "SSH deployment was not confirmed and was not retried. Remote work may still be running; inspect the server before rerunning (check /opt/shutter-count/receive-failures.log for pre-deploy receiver failures). Diagnostic output was withheld.";
 const KEY_TYPES = new Set([
   "ssh-ed25519",
   "ssh-rsa",

@@ -10,7 +10,7 @@
 deploy <完整 40 位 commit SHA> <GitHub run ID> <run attempt>
 ```
 
-SSH 用户固定为 `shutter-deploy`，客户端不能指定仓库、服务器路径、执行程序、环境或上传脚本。管理员安装的固定接收器独立核验公开仓库的当前 main、指定 run/attempt 及其 `test` job 成功结果。GitHub API 出错或限流时停止，不冒险发布；服务器不保存 GitHub token。
+SSH 用户固定为 `shutter-deploy`，客户端不能指定仓库、服务器路径、执行程序、环境或上传脚本。管理员安装的固定接收器独立核验公开仓库的当前 main、指定 run/attempt 及其 `test` job 成功结果。运行授权 API 出错或限流时停止；当前 main API 失败时使用下文的 Git 校验回退；服务器不保存 GitHub token。
 
 接收器拉取精确提交、校验对象并解出干净源码。服务器按锁文件安装依赖并重跑测试。root 管理的发布脚本在切换前再次检查 main，然后原子切换 current，仅重启已核验的 Shutter PM2 ID，检查内网/公网页面、ExifTool 健康及运行中的精确 revision。激活后失败会恢复旧版本并核验其内网健康，旧目录保留。
 
@@ -33,14 +33,14 @@ GitHub 部署并发组不会取消正在进行的发布，服务器另有 flock 
 
 升级控制脚本失败时，管理员恢复备份的可信文件与 PM2 配置；应用激活失败时由发布脚本恢复原 `current`。若回滚未通过健康检查，暂停后续发布并核验当前 SHA、单个 PM2 进程及日志。恢复控制脚本与恢复应用版本是两个独立操作。
 
-本次仅完成本地实现及隔离测试，未执行上述主机操作。PM2 超时设置参见[官方文档](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/)。
+TypeScript 应用已通过本地检查与 Node 22 PR CI；上述 TypeScript 主机升级操作尚未执行。PR #5 的既有 JavaScript 生产发布是已验证的独立版本。PM2 超时设置参见[官方文档](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/)。
 
 ## 服务器前置条件及管理员设置
 
 这是已有服务的更新工具，不会自动初始化服务器。[deploy/deploy.example.json](../deploy/deploy.example.json) 绑定本项目；配置值是待核验条件，不代表设置已经完成。
 
 - 独立 shutter-deploy 账号、锁密码、无 sudo/特权组，只能写自身应用和状态目录。
-- Node 22 位于 /opt/node-v22.23.2-linux-x64/bin；具备 npm、PM2、Git、Bash、GNU coreutils/tar 和 flock。
+- Node 22 位于 /opt/node-v22.23.2-linux-x64/bin；具备 npm、PM2、Git、curl、Bash、GNU coreutils/tar 和 flock。
 - /opt/shutter-count/current 指向真实 releases/ 中的版本。唯一在线 Shutter PM2 进程使用稳定的 current 工作目录及 current/bin/start.mjs，环境与仓库配置一致，Node 22+。
 - root 管理的 pm2-shutter-deploy.service 仅用 /etc/shutter-count/ecosystem.config.cjs 启动该账号的 PM2。所有权迁移后，root PM2 启动项、主 dump 和备份 dump 不得继续引用 Shutter。发布不运行 pm2 save/restart all，也不以 root 部署。
 - 已有 http://127.0.0.1:3020/shutter 和 https://rende.fun/shutter 路由。日常发布不改 nginx 或防火墙。
@@ -89,7 +89,28 @@ production 环境变量：
 
 服务器发布成功后，runner 的最终公网检查仍可能因网络失败。此时工作流失败，但不会启动第二次并发回滚。重试前先查实际 revision、路由、TLS 和 runner 网络，不能把失败自动理解为已经回退。
 
-服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
+服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。若失败发生在该日志创建之前（授权、当前 main 校验、git fetch），接收器会向 /opt/shutter-count/receive-failures.log 追加一行（时间戳、releaseId、阶段、脱敏错误）。GitHub Actions 的 SSH 客户端故意不转发远端 stderr；当提示 “not confirmed” 时，请先在主机查看 receive-failures.log。
+
+接收器与 deploy-release.sh 通过公开 GitHub API `GET https://api.github.com/repos/rendeyuwei/shutter-count/git/ref/heads/main` 读取当前 main SHA，复用与运行授权相同的无认证客户端（15 秒超时、禁止重定向、不带凭据）。2026-10-10 在 ECS 上 `git ls-remote` github.com 约 69 秒，而该 API 约 0.3 秒。瞬时 API 失败最多重试三次并退避。若 API 仍然失败，则回退到 `git ls-remote` 并写入一条面包屑；API 成功但提交不是请求的 SHA 时不回退。`git fetch` 仍使用 180 秒单次超时、`http.lowSpeedLimit=1000`、`http.lowSpeedTime=20`，并且只对瞬时传输失败最多再重试两次（主分支已前进等确定性失败不重试）。
+
+重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
+
+接收器重试依据显式的安全错误分类：API 瞬时状态或传输失败、命令超时及已知 Git 传输失败。对象不存在、权限问题和未分类的子进程失败只尝试一次。接收器不会把原始子进程 stderr 或 API 正文保留在异常或阶段日志中。
+
+### 更新已安装的接收器（需人工）
+
+合并本仓库不会自动替换 /usr/local/libexec/shutter-count/。若审阅通过的合并改动了 `scripts/receive-deploy.ts`、`scripts/check-deploy.ts`、`scripts/deploy-guard.ts`、其共享模块或 `scripts/deploy-release.sh`，先执行 `npm ci && npm run typecheck && npm run build:trusted`。核对已审阅源码与 `dist/trusted/SHA256SUMS`，再显式将相应构建产物以 root 所有者安装到可信目录，例如：
+
+```bash
+# 在 ECS 上以 root 执行，并先核验已合并提交 SHA：
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-guard.mjs /usr/local/libexec/shutter-count/deploy-guard.mjs
+# 核验属主/权限后，再做拒绝用例与一次真实发布验证。
+```
+
+不要从未审阅检出或应用 current 树覆盖生产接收器。应用自动发布路径与该控制面更新彼此独立。
 
 ## 安全边界
 

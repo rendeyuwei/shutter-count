@@ -115,3 +115,26 @@ Initial local verification on 2026-10-11 used Node 24.21.0 and Chrome 155: stric
 The completed local phases are preserved as a migration snapshot on `codex/modernize-typescript`, integrated with main `7e5237a8888686c187c2e6181c09e28a183c2b37`. The Baidu snippet from PR #4 is retained verbatim. PR preparation adds actual browser cancellation coverage and blocks external browser requests, and promotes the production-only check to `npm run test:production` in Node 22 CI. CI records the revision before building, so the production check also verifies the build's revision copy.
 
 Standards and Spec reviews found no blocking runtime or build regression. Their documentation and browser-coverage findings were addressed. The draft PR must record CI evidence for its exact final head before review is complete. Review/release must still satisfy each phase's exit checks; trusted host tools, live PM2 shutdown settings, server capacity and a real-server rollback need separate administrator verification before application activation. No production deployment or main merge is part of this PR preparation.
+
+## Integration with PR #5
+
+The migration now integrates main `f7255200dca3ff25e88a1e13fc7bbe6b42da0b7f`, which contains PR #5. Its deployment fixes are retained in the TypeScript sources rather than restoring parallel JavaScript implementations.
+
+| PR #5 behavior                                                                          | Migration implementation and regression evidence                                                                     |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Public singular `git/ref/heads/main` API first; valid different SHA rejects immediately | `receive-deploy.ts` and `deploy-release.sh`; both stale-main checks forbid Git fallback/retries and activation       |
+| API timeout/transient retries; Git fallback only after API failure                      | Typed public-client error classification and generic retry; API recovery, 404 fallback and exhausted transport tests |
+| Git 180s command bound, low-speed settings and 2s/5s retry backoff                      | Typed receiver constants and command options; timeout/settings, retry/exhaustion and cleanup tests                   |
+| Stage breadcrumbs and safe SSH hint                                                     | `receive-failures.log`, typed `FailureEntry`, sanitized append tests and SSH secret-redaction tests                  |
+| curl prerequisite and release-script API fallback                                       | Bash curl prerequisite; isolated curl/Git stubs cover API success, stale main and fallback logs                      |
+| Administrator installation and bilingual deployment notes                               | Both deployment guides use reviewed `dist/trusted/` bundles and include `deploy-guard.mjs`                           |
+
+The only structural adaptation is extracting the release script's new inline Node JSON validation into the existing trusted `deploy-guard.ts`. Both receiver and guard use the shared runtime decoder; the installed guard remains an independent builtin-only bundle. All tests added in the three PR #5 JavaScript test files are represented in their TypeScript counterparts. The Baidu snippet, stable bootstrap, PM2 guard and TypeScript build/prune sequence remain integrated.
+
+PR #5's JavaScript main release was verified by production workflow runs 38111679891 and 38111869749. That evidence does not validate installing the TypeScript control tools or a TypeScript release's real-host rollback. This integration updates the draft PR only; main merge, host operations, production reruns and deployment-switch changes are outside this step.
+
+### Retry classification repair after review
+
+PR #5 originally treated every redacted `Host source verification failed` message as transient. A deterministic child failure could therefore run three times. The receiver now carries explicit retry classification on its safe host-command errors and uses `PublicGithubError.transient` for API errors. Only known timeouts/transport codes or bounded Git transport signatures permit retries; object, permission and other unclassified failures stop after one attempt. Raw subprocess diagnostics are inspected internally and discarded, preserving the safe messages and stage-log format.
+
+The inherited generic-failure retry test now injects an explicitly classified transport error, preserving its bounded-retry/exhaustion/cleanup assertions. Additional real-child regressions cover missing objects, permission failures, DNS, HTTP 503 and timeout, classification independent of wording, and redaction. Existing stale-SHA tests still require immediate rejection without retry or Git fallback.

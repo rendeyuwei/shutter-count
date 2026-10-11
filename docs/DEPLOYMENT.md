@@ -10,7 +10,7 @@ The `Test and deploy` workflow tests pull requests and every `main` update on No
 deploy <40-character commit SHA> <GitHub run ID> <run attempt>
 ```
 
-The SSH identity is always `shutter-deploy`. The client cannot choose a repository, server path, executable, environment or upload a script. The administrator-installed receiver independently checks the fixed public repository's current `main`, the exact GitHub run/attempt and its successful `test` job. GitHub API errors or rate limits fail closed. No GitHub token is stored on the server.
+The SSH identity is always `shutter-deploy`. The client cannot choose a repository, server path, executable, environment or upload a script. The administrator-installed receiver independently checks the fixed public repository's current `main`, the exact GitHub run/attempt and its successful `test` job. Run-authorization API errors or rate limits fail closed. Current-main API failures use the verified Git fallback described below. No GitHub token is stored on the server.
 
 The receiver fetches the exact commit, verifies the object and extracts a clean archive. The host installs locked dependencies and reruns tests before switching `current`. The root-managed release script checks `main` again just before activation, atomically changes the symlink, restarts only the verified Shutter PM2 ID, and checks the local/public page, ExifTool and exact running revision. Failure restores the previous release and verifies its local health. Old releases are retained.
 
@@ -33,14 +33,14 @@ Run `npm ci && npm run typecheck && npm run build:trusted` from reviewed source.
 
 If the control-file upgrade fails, the administrator restores the trusted-file and PM2 configuration backups. Application activation failures restore the previous `current` through the release script. A failed rollback health check requires pausing subsequent releases and inspecting the current SHA, single PM2 process and logs. Restoring control files and restoring an app release are separate operations.
 
-This change has only been implemented and tested locally; these host operations have not been performed. See [PM2's shutdown-timeout documentation](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/).
+The TypeScript application has passed local checks and Node 22 PR CI; these TypeScript host-upgrade operations have not been performed. The existing JavaScript deployment of PR #5 is a separate verified release. See [PM2's shutdown-timeout documentation](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/).
 
 ## Server prerequisites and administrator setup
 
 This is an existing-deployment updater, not an automatic server provisioner. The example configuration in [`deploy/deploy.example.json`](../deploy/deploy.example.json) binds this Shutter installation. Treat values as requirements to verify, not evidence that setup has completed.
 
 - Dedicated `shutter-deploy` account, no sudo, locked password, no privileged groups; only its own app/state directories writable.
-- Node 22 at `/opt/node-v22.23.2-linux-x64/bin`, npm, PM2, Git, Bash, GNU coreutils/tar and `flock`.
+- Node 22 at `/opt/node-v22.23.2-linux-x64/bin`, npm, PM2, Git, curl, Bash, GNU coreutils/tar and `flock`.
 - `/opt/shutter-count/current` points into its real `releases/` directory. Exactly one online Shutter process uses that stable working directory and `current/bin/start.mjs`, with the committed environment and Node 22+.
 - A root-managed `pm2-shutter-deploy.service` starts only this account's PM2 using `/etc/shutter-count/ecosystem.config.cjs`. Root PM2 startup/dump/fallback files must not retain Shutter references after ownership migration. Never run `pm2 save`, `restart all` or a root deployment.
 - Existing loopback `http://127.0.0.1:3020/shutter` and public `https://rende.fun/shutter` routing. Ordinary releases do not edit nginx or firewall rules.
@@ -89,7 +89,28 @@ The workflow has `contents: read`, pinned official checkout/setup actions, no pe
 
 The final runner-side public check can fail even after the server completed successfully. It reports failure without launching a second racing rollback. Inspect the current revision, routing, TLS and runner connectivity before retrying. Do not infer failure means production reverted.
 
-Server release output is retained in `/opt/shutter-count/deploy-<release-id>.log` without relaying it to the runner. When retrying CI, rerun the full workflow so the same attempt contains a successful test job. A failed activation logs rollback to `/opt/shutter-count/rollback-<release-id>.log`. If it reports `CRITICAL`, inspect current, PM2 and health before another release. Disconnect/HUP/TERM recovery is tested, but SIGKILL, power loss or storage failure can prevent rollback. Keep previous versions until validated; no automatic pruning is performed. Disable future releases by setting `SHUTTER_DEPLOY_ENABLED=false`; this does not cancel an already running server deployment.
+Server release output is retained in `/opt/shutter-count/deploy-<release-id>.log` without relaying it to the runner. Failures **before** that log exists (authorize, current-main check, `git fetch`) append a one-line breadcrumb to `/opt/shutter-count/receive-failures.log` with timestamp, `releaseId`, stage and a redacted error. The GitHub Actions SSH client intentionally withholds remote stderr; when it reports that deployment was not confirmed, check `receive-failures.log` on the host first.
+
+The receiver and `deploy-release.sh` read the current `main` SHA from the public GitHub API `GET https://api.github.com/repos/rendeyuwei/shutter-count/git/ref/heads/main`, using the same unauthenticated client as run authorization (15s timeout, no redirects, no credentials). On 2026-10-10 an ECS `git ls-remote` to github.com took about 69s while this API answered in about 0.3s. Transient API failures retry up to three times with backoff. If the API still fails, the check falls back to `git ls-remote` and appends a breadcrumb; a successful API response whose commit is not the requested SHA does not fall back. `git fetch` keeps a **180s** per-attempt timeout, `http.lowSpeedLimit=1000`, `http.lowSpeedTime=20`, and up to two retries on transient transport failures only—not on “main advanced” mismatches.
+
+When retrying CI, rerun the full workflow so the same attempt contains a successful test job. A failed activation logs rollback to `/opt/shutter-count/rollback-<release-id>.log`. If it reports `CRITICAL`, inspect current, PM2 and health before another release. Disconnect/HUP/TERM recovery is tested, but SIGKILL, power loss or storage failure can prevent rollback. Keep previous versions until validated; no automatic pruning is performed. Disable future releases by setting `SHUTTER_DEPLOY_ENABLED=false`; this does not cancel an already running server deployment.
+
+Receiver retries use explicit safe error classification: API transient status/transport errors, command timeouts and known Git transport failures. Missing objects, permissions and unclassified child failures stop after one attempt. The receiver never retains raw child stderr or API response bodies in its errors or stage logs.
+
+### Updating the installed receiver (manual)
+
+Merging this repository does **not** replace `/usr/local/libexec/shutter-count/`. After a reviewed merge that changes `scripts/receive-deploy.ts`, `scripts/check-deploy.ts`, `scripts/deploy-guard.ts`, their shared modules or `scripts/deploy-release.sh`, rebuild with `npm ci && npm run typecheck && npm run build:trusted`. Verify `dist/trusted/SHA256SUMS` against the reviewed source, then explicitly install the corresponding bundles and script as root-owned files, for example:
+
+```bash
+# On the ECS host, as root, after verifying the merged commit SHA:
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-guard.mjs /usr/local/libexec/shutter-count/deploy-guard.mjs
+# Confirm ownership/mode, then exercise a dry rejection and one real release.
+```
+
+Do not overwrite the production receiver from an unreviewed checkout or from the application `current` tree. Auto-deploy of the app release path remains separate from this control-plane update.
 
 ## Security boundary
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "../shared/protocol.js";
+import { decodeMainRef } from "../shared/deploy.js";
 
 export function validateLoopback(baseUrl: string): void {
   const url = new URL(baseUrl);
@@ -110,6 +111,13 @@ if (
     if (Number(process.versions.node.split(".")[0]) < 22) process.exitCode = 1;
   } else if (command === "url" && args[0]) {
     validateLoopback(args[0]);
+  } else if (command === "main-ref" && args[0]) {
+    const text = fs.readFileSync(args[0], "utf8");
+    if (text.length > 65536) throw new Error("Invalid main ref response");
+    const body: unknown = JSON.parse(text);
+    const sha = decodeMainRef(body);
+    if (sha === null) throw new Error("Invalid main ref response");
+    process.stdout.write(sha);
   } else if (command === "pm2" && args.length === 4) {
     const [previous, configPath, baseUrl, root] = args;
     const config: unknown = createRequire(import.meta.url)(configPath!);

@@ -150,9 +150,28 @@ async function fixture(t: TestContext, extraEnv: NodeJS.ProcessEnv = {}) {
     ),
     fsp.writeFile(
       path.join(bin, "git"),
-      '#!/bin/sh\nprintf "%s\\trefs/heads/main\\n" "${TEST_MAIN_SHA:-' +
+      '#!/bin/sh\necho "git $*" >> "$TEST_LOG"\nprintf "%s\\trefs/heads/main\\n" "${TEST_MAIN_SHA:-' +
         sha +
         '}"\n',
+      { mode: 0o755 }
+    ),
+    fsp.writeFile(
+      path.join(bin, "curl"),
+      [
+        "#!/bin/sh",
+        'echo "curl $*" >> "$TEST_LOG"',
+        'if [ -n "${CURL_EXIT:-}" ]; then exit "$CURL_EXIT"; fi',
+        "out=",
+        "prev=",
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "--output" ]; then out=$arg; fi',
+        "  prev=$arg",
+        "done",
+        `sha=\${TEST_MAIN_SHA:-${sha}}`,
+        'json="{\\"ref\\":\\"refs/heads/main\\",\\"object\\":{\\"type\\":\\"commit\\",\\"sha\\":\\"$sha\\"}}"',
+        'if [ -n "$out" ]; then printf \'%s\' "$json" > "$out"; printf \'200\'; else printf \'%s\' "$json"; fi',
+        "",
+      ].join("\n"),
       { mode: 0o755 }
     ),
     fsp.writeFile(
@@ -248,9 +267,13 @@ test("release activation changes only current and the named PM2 app", async (t) 
   const commands = await fsp.readFile(f.log, "utf8");
   assert.match(
     commands,
-    /npm ci --no-audit --no-fund\nnpm run typecheck\nnpm run build\nnpm run test:built\nnpm prune --omit=dev --no-audit --no-fund\npm2 restart/
+    /npm ci --no-audit --no-fund\nnpm run typecheck\nnpm run build\nnpm run test:built\nnpm prune --omit=dev --no-audit --no-fund\n/
   );
   assert.match(commands, /pm2 restart 7/);
+  assert.ok(commands.indexOf("curl ") > commands.indexOf("npm prune "));
+  assert.ok(commands.indexOf("pm2 restart") > commands.indexOf("curl "));
+  assert.match(commands, /git\/ref\/heads\/main/);
+  assert.doesNotMatch(commands, /ls-remote/);
   assert.doesNotMatch(commands, /pm2 (save|delete|restart all)|nginx|sudo/);
   assert.ok(await fsp.stat(f.previous));
 });
@@ -373,7 +396,9 @@ test("main advancing during preparation refuses activation", async (t) => {
   assert.notEqual(result.code, 0);
   assert.match(result.output, /main advanced/);
   assert.equal(await fsp.realpath(path.join(f.root, "current")), f.previous);
-  assert.doesNotMatch(await fsp.readFile(f.log, "utf8"), /pm2 restart/);
+  const commands = await fsp.readFile(f.log, "utf8");
+  assert.match(commands, /git\/ref\/heads\/main/);
+  assert.doesNotMatch(commands, /ls-remote|pm2 restart/);
 });
 
 test("a different PM2 interpreter aborts before installation", async (t) => {
@@ -398,4 +423,23 @@ test("PM2 must allow graceful shutdown before activation", async (t) => {
   assert.match(result.output, /shutdown timeout/);
   assert.equal(await fsp.realpath(path.join(f.root, "current")), f.previous);
   await assert.rejects(fsp.stat(f.log), { code: "ENOENT" });
+});
+
+test("main ref API failure falls back to git ls-remote and records a breadcrumb", async (t) => {
+  const f = await fixture(t, { CURL_EXIT: "28" });
+  const result = await run(f);
+  assert.equal(result.code, 0, result.output);
+  const commands = await fsp.readFile(f.log, "utf8");
+  assert.equal(commands.match(/curl /g)?.length, 3);
+  assert.match(commands, /ls-remote/);
+  const breadcrumb = await fsp.readFile(
+    path.join(f.root, "receive-failures.log"),
+    "utf8"
+  );
+  assert.match(breadcrumb, /stage=main-sha-api/);
+  assert.match(breadcrumb, /falling back to git ls-remote/);
+  assert.equal(
+    await fsp.realpath(path.join(f.root, "current")),
+    path.join(f.root, "releases", releaseId)
+  );
 });
