@@ -78,7 +78,22 @@ async function fixture(t, extraEnv = {}) {
       if (actual !== expected || (expected === process.env.FAIL_HEALTH_SHA) || (process.argv[2].startsWith('https:') && process.env.FAIL_PUBLIC === '1')) process.exit(1);
     `),
     fsp.writeFile(path.join(temp, "pm2.json"), JSON.stringify([{ name: "shutter-count", pm_id: 7, pm2_env: { ...env, pm_cwd: path.join(root, "current"), pm_exec_path: path.join(root, "current", "bin/start.mjs"), exec_interpreter: process.execPath, node_version: "22.0.0", status: "online" } }])),
-    fsp.writeFile(path.join(bin, "git"), '#!/bin/sh\nprintf "%s\\trefs/heads/main\\n" "${TEST_MAIN_SHA:-' + sha + '}"\n', { mode: 0o755 }),
+    fsp.writeFile(path.join(bin, "git"), '#!/bin/sh\necho "git $*" >> "$TEST_LOG"\nprintf "%s\\trefs/heads/main\\n" "${TEST_MAIN_SHA:-' + sha + '}"\n', { mode: 0o755 }),
+    fsp.writeFile(path.join(bin, "curl"), [
+      "#!/bin/sh",
+      "echo \"curl $*\" >> \"$TEST_LOG\"",
+      "if [ -n \"${CURL_EXIT:-}\" ]; then exit \"$CURL_EXIT\"; fi",
+      "out=",
+      "prev=",
+      "for arg in \"$@\"; do",
+      "  if [ \"$prev\" = \"--output\" ]; then out=$arg; fi",
+      "  prev=$arg",
+      "done",
+      `sha=\${TEST_MAIN_SHA:-${sha}}`,
+      "json=\"{\\\"ref\\\":\\\"refs/heads/main\\\",\\\"object\\\":{\\\"type\\\":\\\"commit\\\",\\\"sha\\\":\\\"$sha\\\"}}\"",
+      "if [ -n \"$out\" ]; then printf '%s' \"$json\" > \"$out\"; printf '200'; else printf '%s' \"$json\"; fi",
+      "",
+    ].join("\n"), { mode: 0o755 }),
     fsp.writeFile(path.join(bin, "npm"), '#!/bin/sh\necho "npm $*" >> "$TEST_LOG"\n[ "$FAIL_NPM" != "1" ]\n', { mode: 0o755 }),
     fsp.writeFile(path.join(bin, "pm2"), '#!/bin/sh\nif [ "$1" = "jlist" ]; then cat "$TEST_PM2"; exit; fi\necho "pm2 $*" >> "$TEST_LOG"\ncase "$(readlink -f "$TEST_ROOT/current")" in *"$FAIL_RELOAD_ID"*) [ -z "$FAIL_RELOAD_ID" ];; *) exit 0;; esac\n', { mode: 0o755 }),
   ]);
@@ -105,6 +120,8 @@ test("release activation changes only current and the named PM2 app", async t =>
   assert.match(commands, /npm ci --omit=dev --no-audit --no-fund/);
   assert.match(commands, /npm test/);
   assert.match(commands, /pm2 restart 7/);
+  assert.match(commands, /git\/ref\/heads\/main/);
+  assert.doesNotMatch(commands, /ls-remote/);
   assert.doesNotMatch(commands, /pm2 (save|delete|restart all)|nginx|sudo/);
   assert.ok(await fsp.stat(f.previous));
 });
@@ -185,7 +202,22 @@ test("main advancing during preparation refuses activation", async t => {
   assert.notEqual(result.code, 0);
   assert.match(result.output, /main advanced/);
   assert.equal(await fsp.realpath(path.join(f.root, "current")), f.previous);
-  assert.doesNotMatch(await fsp.readFile(f.log, "utf8"), /pm2 restart/);
+  const commands = await fsp.readFile(f.log, "utf8");
+  assert.match(commands, /git\/ref\/heads\/main/);
+  assert.doesNotMatch(commands, /ls-remote|pm2 restart/);
+});
+
+test("main ref API failure falls back to git ls-remote and records a breadcrumb", async t => {
+  const f = await fixture(t, { CURL_EXIT: "28" });
+  const result = await run(f);
+  assert.equal(result.code, 0, result.output);
+  const commands = await fsp.readFile(f.log, "utf8");
+  assert.equal(commands.match(/curl /g).length, 3);
+  assert.match(commands, /ls-remote/);
+  const breadcrumb = await fsp.readFile(path.join(f.root, "receive-failures.log"), "utf8");
+  assert.match(breadcrumb, /stage=main-sha-api/);
+  assert.match(breadcrumb, /falling back to git ls-remote/);
+  assert.equal(await fsp.realpath(path.join(f.root, "current")), path.join(f.root, "releases", releaseId));
 });
 
 

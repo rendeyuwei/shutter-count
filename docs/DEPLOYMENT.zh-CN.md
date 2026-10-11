@@ -70,7 +70,9 @@ production 环境变量：
 
 服务器发布成功后，runner 的最终公网检查仍可能因网络失败。此时工作流失败，但不会启动第二次并发回滚。重试前先查实际 revision、路由、TLS 和 runner 网络，不能把失败自动理解为已经回退。
 
-服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。若失败发生在该日志创建之前（授权、git ls-remote、git fetch），接收器会向 /opt/shutter-count/receive-failures.log 追加一行（时间戳、releaseId、阶段、脱敏错误）。GitHub Actions 的 SSH 客户端故意不转发远端 stderr；当提示 “not confirmed” 时，请先在主机查看 receive-failures.log。接收器对 git 使用 180 秒单次超时（杭州到 GitHub 偶发峰值会超过原先 120 秒）、HTTP 低速/连接限制，并对瞬时传输失败最多再重试两次（主分支已前进等确定性失败不重试）。
+服务器发布输出保存在 /opt/shutter-count/deploy-<release-id>.log，不直接转发到 runner。若失败发生在该日志创建之前（授权、当前 main 校验、git fetch），接收器会向 /opt/shutter-count/receive-failures.log 追加一行（时间戳、releaseId、阶段、脱敏错误）。GitHub Actions 的 SSH 客户端故意不转发远端 stderr；当提示 “not confirmed” 时，请先在主机查看 receive-failures.log。
+
+接收器与 deploy-release.sh 通过公开 GitHub API `GET https://api.github.com/repos/rendeyuwei/shutter-count/git/ref/heads/main` 读取当前 main SHA，复用与运行授权相同的无认证客户端（15 秒超时、禁止重定向、不带凭据）。2026-10-10 在 ECS 上 `git ls-remote` github.com 约 69 秒，而该 API 约 0.3 秒。瞬时 API 失败最多重试三次并退避。若 API 仍然失败，则回退到 `git ls-remote` 并写入一条面包屑；API 成功但提交不是请求的 SHA 时不回退。`git fetch` 仍使用 180 秒单次超时、`http.lowSpeedLimit=1000`、`http.lowSpeedTime=20`，并且只对瞬时传输失败最多再重试两次（主分支已前进等确定性失败不重试）。
 
 重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
 

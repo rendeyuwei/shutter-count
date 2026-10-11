@@ -24,13 +24,16 @@ export const EXPECTED_CONFIG = Object.freeze({
 });
 const REPOSITORY_URL = `https://github.com/${EXPECTED_CONFIG.repository}.git`;
 const API_BASE = `https://api.github.com/repos/${EXPECTED_CONFIG.repository}/actions/runs`;
+// Singular /git/ref/ (not /git/refs/). ECS git ls-remote to github.com took ~69s; this API answers in ~0.3s.
+export const MAIN_REF_URL = `https://api.github.com/repos/${EXPECTED_CONFIG.repository}/git/ref/heads/main`;
+const TRANSIENT_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"];
 const GIT_OPTIONS = [
   "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
   "-c", "core.attributesFile=/dev/null", "-c", "http.followRedirects=false",
   "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
-  // Hangzhou→GitHub HTTP can stall; fail bounded transfers instead of hanging forever.
-  "-c", "http.connectTimeout=30", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60",
+  // Hangzhou→GitHub HTTP can stall. fetch (and ls-remote fallback) abort when below 1KB/s for 20s.
+  "-c", "http.connectTimeout=30", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
 ];
 // execFile timeout for git/tar: 120s was tight during Hangzhou→GitHub spikes; keep bounded.
 export const GIT_COMMAND_TIMEOUT_MS = 180_000;
@@ -104,6 +107,23 @@ export function validateAuthorization(run, jobs, command) {
   validateJobs(jobs, command);
 }
 
+function apiVerificationError(transient) {
+  // Never echo API bodies, request errors or ambient credentials.
+  const error = new Error(transient
+    ? "Public GitHub deployment verification timed out"
+    : "Public GitHub deployment verification failed");
+  error.publicGithub = true;
+  error.transient = transient;
+  return error;
+}
+
+function isTransientTransport(error) {
+  const name = String(error?.name ?? "");
+  if (name === "TimeoutError" || name === "AbortError") return true;
+  const code = String(error?.code ?? error?.cause?.code ?? "");
+  return /ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|ECONNABORTED/i.test(code);
+}
+
 async function fetchPublicJson(url, request) {
   try {
     const response = await request(url, {
@@ -111,14 +131,26 @@ async function fetchPublicJson(url, request) {
       signal: AbortSignal.timeout(15000),
       headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "shutter-count-deploy-receiver" },
     });
-    if (response.status !== 200 || response.redirected || (response.url && response.url !== url)) throw new Error();
+    if (TRANSIENT_HTTP_STATUS.has(response?.status)) throw apiVerificationError(true);
+    if (!response || response.status !== 200 || response.redirected || (response.url && response.url !== url)) {
+      throw apiVerificationError(false);
+    }
     const text = await response.text();
-    if (text.length > 2 * 1024 * 1024) throw new Error();
+    if (text.length > 2 * 1024 * 1024) throw apiVerificationError(false);
     return JSON.parse(text);
-  } catch {
-    // Never echo API response bodies, request errors or ambient credentials.
-    throw new Error("Public GitHub deployment verification failed");
+  } catch (error) {
+    if (error?.publicGithub) throw error;
+    throw apiVerificationError(isTransientTransport(error));
   }
+}
+
+export function mainShaFromRef(body) {
+  const sha = body?.object?.sha;
+  if (body?.ref !== "refs/heads/main" || body?.object?.type !== "commit" ||
+      typeof sha !== "string" || !/^[a-f0-9]{40}(?![\s\S])/.test(sha)) {
+    throw apiVerificationError(false);
+  }
+  return sha;
 }
 
 export async function authorizeDeployment(command, request = globalThis.fetch) {
@@ -138,7 +170,7 @@ export function deploymentEnvironment(config = EXPECTED_CONFIG) {
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "/usr/bin/false",
     SSH_ASKPASS: "/usr/bin/false", GIT_SSH_COMMAND: "/usr/bin/false",
-    GIT_HTTP_CONNECTTIMEOUT: "30", GIT_HTTP_LOW_SPEED_LIMIT: "1000", GIT_HTTP_LOW_SPEED_TIME: "60",
+    GIT_HTTP_CONNECTTIMEOUT: "30", GIT_HTTP_LOW_SPEED_LIMIT: "1000", GIT_HTTP_LOW_SPEED_TIME: "20",
   };
 }
 
@@ -242,7 +274,28 @@ export function executeCommand(executable, args, options = {}) {
   });
 }
 
-export async function verifyCurrentMain(command, runCommand, env, { retry = runWithRetries } = {}) {
+export async function verifyCurrentMain(command, runCommand, env, {
+  retry = runWithRetries, request = globalThis.fetch, recordFallback = async () => {},
+} = {}) {
+  // A resolved SHA that is not the requested commit is definitive. Only a failed API read falls back.
+  let current;
+  try {
+    current = mainShaFromRef(await retry(() => fetchPublicJson(MAIN_REF_URL, request)));
+  } catch (error) {
+    current = undefined;
+    try {
+      const detail = error instanceof Error ? error.message : "Public GitHub deployment verification failed";
+      await recordFallback({
+        releaseId: command.releaseId,
+        stage: "main-sha-api",
+        error: new Error(`${detail}; falling back to git ls-remote`),
+      });
+    } catch { /* A breadcrumb failure must not skip the ls-remote fallback. */ }
+  }
+  if (current !== undefined) {
+    if (current !== command.sha) throw new Error("Requested commit is no longer current main");
+    return;
+  }
   const output = await retry(() => runCommand("/usr/bin/git",
     [...GIT_OPTIONS, "ls-remote", "--exit-code", REPOSITORY_URL, "refs/heads/main"], { env, cwd: "/" }));
   if (output !== `${command.sha}\trefs/heads/main\n`) throw new Error("Requested commit is no longer current main");
@@ -331,6 +384,7 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
   const runCommand = dependencies.runCommand ?? executeCommand;
   const deploy = dependencies.deploy ?? spawnDeployment;
   const retry = dependencies.retry ?? runWithRetries;
+  const request = dependencies.request ?? globalThis.fetch;
   const recordFailure = dependencies.recordFailure ??
     (entry => appendFailureLog(entry, { fileSystem }));
   const signals = installSignalGuard(dependencies.signalSource ?? process);
@@ -347,14 +401,16 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
   try {
     stage = "authorize";
     try {
-      await authorizeDeployment(command, dependencies.request ?? globalThis.fetch);
+      await authorizeDeployment(command, request);
     } catch (error) {
       throw stageError(stage, error);
     }
     signals.assertActive();
-    stage = "ls-remote";
+    stage = "main-sha";
     try {
-      await verifyCurrentMain(command, runCommand, gateEnv, { retry });
+      await verifyCurrentMain(command, runCommand, gateEnv, {
+        retry, request, recordFallback: entry => recordFailure(entry),
+      });
     } catch (error) {
       throw stageError(stage, error);
     }
@@ -397,9 +453,11 @@ export async function receiveDeployment(originalCommand, dependencies = {}) {
     signals.assertActive();
     // No preparation or external decision happens between this check and the
     // trusted deploy script. That script owns the activation/rollback flock.
-    stage = "ls-remote-pre-activate";
+    stage = "main-sha-pre-activate";
     try {
-      await verifyCurrentMain(command, runCommand, gateEnv, { retry });
+      await verifyCurrentMain(command, runCommand, gateEnv, {
+        retry, request, recordFallback: entry => recordFailure(entry),
+      });
     } catch (error) {
       throw stageError(stage, error);
     }
