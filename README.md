@@ -5,7 +5,7 @@
 Upload a camera-original JPG/JPEG to read its shutter count from EXIF and manufacturer MakerNotes, parsed with ExifTool.
 
 - Project URL: <https://rende.fun/shutter>
-- Static frontend with no build step; one Fastify backend.
+- Vite-built TypeScript browser entrypoint and one Fastify backend.
 - Photos are written to a temporary directory during parsing. The application attempts to remove that directory before sending the response; it does not archive photos or store them in a database.
 - Failed results include copyable diagnostics so operators can find the corresponding server log without asking for the photo.
 
@@ -13,32 +13,40 @@ Upload a camera-original JPG/JPEG to read its shutter count from EXIF and manufa
 
 | Component | Purpose |
 | --- | --- |
-| Node.js ≥ 22 | ESM runtime |
+| Node.js ≥ 22.12 | ESM runtime |
+| TypeScript / Vite | Strict checks across all code and browser builds |
 | Fastify 5 | HTTP server |
 | `exiftool-vendored` | Bundled ExifTool for EXIF and MakerNotes |
 | `@fastify/multipart` | Stream uploads to temporary files |
-| `@fastify/static` | Serve `public/` without a frontend build |
+| `@fastify/static` | Serve compiled `dist/public/` assets |
 | `@fastify/rate-limit` | Parse endpoint limit: 30 requests/minute/IP by default |
 
-- `public/`: frontend, styles, and assets
-- `src/server.js`: routes, upload validation, request IDs, logs, and temporary-file cleanup
-- `src/parse.js`: ExifTool lifecycle and parsing
-- `src/mapping.js`: camera-brand recognition and shutter-tag priorities
+- `web/`: browser TypeScript and HTML; `public/`: styles and static assets
+- `shared/`: typed result contracts
+- `src/app.ts`: routes, upload validation, request IDs, logs, and temporary-file cleanup
+- `src/parse.ts`: ExifTool lifecycle and parsing
+- `src/mapping.ts`: camera-brand recognition and shutter-tag priorities
 - `test/`: server, parser, mapping, and diagnostics regression tests; sample JPEGs are described in [test/fixtures/README.md](test/fixtures/README.md)
-- `scripts/smoke.mjs`: checks against a running instance
+- `scripts/smoke.ts`: checks against a running instance
 - `ecosystem.config.cjs` / `bin/start.mjs`: PM2 configuration and explicit process-manager entrypoint
 - `docs/`: [product requirements](docs/PRD-shutter.md) and [UI design](docs/DESIGN.md)
+- `tools/build.ts` / `dist/`: build orchestration and ignored runtime artifacts
+
+The [whole-project modernization plan](docs/MODERNIZATION.md) covers browser/server code, shared protocols, Node tools, startup, and every test. All four phases are implemented locally with strict TypeScript source and compiled runtime artifacts under `dist/`.
 
 ## Run locally
 
-Requires Node.js ≥ 22.
+Requires Node.js ≥ 22.12.
 
 ```bash
-npm install
+npm ci
+npm run build
 npm start
 ```
 
 Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` with HTTP 308.
+
+`npm run dev:server` watches backend source with tsx. In a second terminal, `npm run dev:web` starts Vite and proxies `/api` to the default local backend at `/shutter/api`. Production startup uses compiled files and needs no development dependencies.
 
 ### Environment variables
 
@@ -48,19 +56,36 @@ Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` w
 | `HOST` | `127.0.0.1` | Bind address; the default expects a local reverse proxy for public access |
 | `BASE_PATH` | `/shutter` | Application path prefix; `/` mounts at the root |
 | `MAX_UPLOAD_MB` | `50` | Server upload limit, in units of 1,048,576 bytes; oversized uploads return `file_too_large` |
+| `MAX_ACTIVE_UPLOADS` | `2` | Concurrent upload/parse/cleanup lifetimes |
+| `MAX_WAITING_UPLOADS` | `8` | Maximum queued uploads |
+| `QUEUE_WAIT_MS` | `5000` | Queue timeout in milliseconds; returns 503 / `busy` |
+| `REQUEST_TIMEOUT_MS` | `60000` | HTTP request receipt timeout in milliseconds |
 | `TRUST_PROXY` | `127.0.0.1,::1` | Fastify `trustProxy`: `true`, `false`, or comma-separated IPs/CIDRs |
 
 The default trusts only a loopback proxy, such as nginx on the same host. Set `TRUST_PROXY` for the actual proxy topology; trusting arbitrary clients can let them spoof `X-Forwarded-For` and bypass per-IP rate limits.
 
-The browser currently has a separate 50 MB limit in `public/app.js`. Changing `MAX_UPLOAD_MB` alone does not change that browser-side limit.
+The browser reads the effective byte limit through `GET /api/config`. Failed settings retrieval can be retried; uploads wait for valid settings. Invalid ports, paths, limits and proxy settings prevent startup.
 
 ## Tests
 
 ```bash
 npm test
+npm run typecheck
+npm run format:check
+npm run test:browser
 ```
 
-Uses Node's built-in test runner with automatic test discovery (`node --test`). Coverage includes routes and static files, upload validation, rate limits, temporary-file cleanup, symlinked startup, real JPEG parsing, brand-specific tag priorities and plausible-count limits. Diagnostics regression tests cover request-ID correlation, safe failure classifications, and excluding photo content and private metadata from diagnostic output.
+Uses Node's built-in test runner on compiled tests under `dist/test/`. `npm test` builds first; `npm run test:built` reuses a completed build. After building, a focused mapping check is `node --test dist/test/mapping.test.js`. Coverage includes routes and static files, upload validation, rate limits, temporary-file cleanup, symlinked startup, real JPEG parsing, brand-specific tag priorities and plausible-count limits. Diagnostics regression tests cover request-ID correlation, safe failure classifications, and excluding photo content and private metadata from diagnostic output.
+
+Browser tests use installed Chrome (or `CHROME_PATH`) in an isolated session, covering real uploads, cancellation, retries, diagnostics, keyboard interaction and mobile layout. All external requests, including Baidu analytics, are blocked during these tests. They do not download a browser.
+
+CI records `REVISION` before building and runs `npm run test:production`. This check creates a temporary installation with only production dependencies and verifies the copied revision, stable bootstrap, assets, effective upload settings, Nikon count 526 and graceful shutdown. To run it locally:
+
+```bash
+git rev-parse HEAD > REVISION
+npm run build
+npm run test:production
+```
 
 ### Smoke test a running instance
 
@@ -270,3 +295,5 @@ pm2 logs shutter-count
 - There is no photo database or intentional long-term photo archive. Parse results sent to the uploader may include the sanitized filename and selected camera metadata; server diagnostic events and the UI's copied diagnostic report omit those values.
 - Diagnostics use allowlisted classifications and summaries rather than photo bytes, full EXIF, raw exception messages, or stack traces. Request IDs correlate events only; no photo-download/history API is added.
 - Proxy, supervisor, hosting, and backup logs/storage have their own policies. Review those separately when operating the service.
+
+Capacity exhaustion or queue timeout returns HTTP 503 / `error` / `busy`, with `parser_queue_full`, `parser_queue_timeout` or `parser_closed` in diagnostic logs. Each application closes its own ExifTool pool. SIGINT/SIGTERM starts a bounded 20-second shutdown; PM2 requires `kill_timeout: 25000`, as described in the deployment guide.

@@ -5,7 +5,7 @@
 上传一张相机直出的 JPG/JPEG 原图，通过 ExifTool 解析 EXIF 和厂商 MakerNotes，读取快门次数。
 
 - 项目地址：<https://rende.fun/shutter>
-- 前端为纯静态页面，无构建步骤；后端为单个 Fastify 服务。
+- 使用 Vite 构建的 TypeScript 前端入口，后端为单个 Fastify 服务。
 - 图片在解析期间写入临时目录，应用会在发送响应前尝试删除该目录；不建立图片档案，也不将图片存入数据库。
 - 读取失败时可复制诊断信息，让运维人员不依赖原图也能查到对应的服务端日志。
 
@@ -13,32 +13,40 @@
 
 | 组件 | 用途 |
 | --- | --- |
-| Node.js ≥ 22 | ESM 运行环境 |
+| Node.js ≥ 22.12 | ESM 运行环境 |
+| TypeScript / Vite | 全项目严格检查与前端构建 |
 | Fastify 5 | HTTP 服务 |
 | `exiftool-vendored` | 内置 ExifTool，解析 EXIF / MakerNotes |
 | `@fastify/multipart` | 流式上传到临时文件 |
-| `@fastify/static` | 托管 `public/`，无前端构建 |
+| `@fastify/static` | 托管编译后的 `dist/public/` 资源 |
 | `@fastify/rate-limit` | 解析接口默认限流：每 IP 每分钟 30 次 |
 
-- `public/`：前端、样式和静态资源
-- `src/server.js`：路由、上传校验、请求 ID、日志及临时文件清理
-- `src/parse.js`：ExifTool 生命周期与解析
-- `src/mapping.js`：相机品牌识别和快门标签优先级
+- `web/`：浏览器 TypeScript 与 HTML；`public/`：样式与静态资源
+- `shared/`：带类型的结果契约
+- `src/app.ts`：路由、上传校验、请求 ID、日志及临时文件清理
+- `src/parse.ts`：ExifTool 生命周期与解析
+- `src/mapping.ts`：相机品牌识别和快门标签优先级
 - `test/`：服务端、解析、映射和诊断回归测试；JPEG 样本说明见 [test/fixtures/README.md](test/fixtures/README.md)
-- `scripts/smoke.mjs`：针对运行中实例的冒烟测试
+- `scripts/smoke.ts`：针对运行中实例的冒烟测试
 - `ecosystem.config.cjs` / `bin/start.mjs`：PM2 配置与进程管理器显式启动入口
 - `docs/`：[产品需求](docs/PRD-shutter.md)与 [UI 设计](docs/DESIGN.md)
+- `tools/build.ts` / `dist/`：构建编排及忽略的运行产物
+
+[全项目现代化方案](docs/MODERNIZATION.zh-CN.md)覆盖前后端、共享协议、Node 工具、启动逻辑与全部测试。四个阶段已在本地完成，源码统一严格 TypeScript，编译产物位于 `dist/`。
 
 ## 本地运行
 
-要求 Node.js ≥ 22。
+要求 Node.js ≥ 22.12。
 
 ```bash
-npm install
+npm ci
+npm run build
 npm start
 ```
 
 打开 <http://127.0.0.1:3020/shutter/>。`GET /shutter` 会以 HTTP 308 跳转到 `/shutter/`。
+
+`npm run dev:server` 使用 tsx 监听后端源码。在第二个终端运行 `npm run dev:web` 启动 Vite，将 `/api` 代理到默认本地后端的 `/shutter/api`。生产启动直接运行编译文件，不依赖开发依赖。
 
 ### 环境变量
 
@@ -48,19 +56,36 @@ npm start
 | `HOST` | `127.0.0.1` | 监听地址；默认通过本机反向代理对外提供服务 |
 | `BASE_PATH` | `/shutter` | 应用路径前缀；设置为 `/` 可挂载到根路径 |
 | `MAX_UPLOAD_MB` | `50` | 服务端上传上限，每单位为 1,048,576 字节；超限返回 `file_too_large` |
+| `MAX_ACTIVE_UPLOADS` | `2` | 同时执行上传、解析和清理的数量 |
+| `MAX_WAITING_UPLOADS` | `8` | 等待队列上限 |
+| `QUEUE_WAIT_MS` | `5000` | 最长等待时间（毫秒），超出返回 503 / `busy` |
+| `REQUEST_TIMEOUT_MS` | `60000` | HTTP 请求接收超时（毫秒） |
 | `TRUST_PROXY` | `127.0.0.1,::1` | Fastify `trustProxy`：`true`、`false` 或逗号分隔的 IP/CIDR 列表 |
 
 默认仅信任本机回环代理，例如同机 nginx。应根据实际代理拓扑设置 `TRUST_PROXY`；信任任意客户端可能使其伪造 `X-Forwarded-For`，绕过每 IP 限流。
 
-浏览器端在 `public/app.js` 中另有固定的 50 MB 上限。只修改 `MAX_UPLOAD_MB` 不会改变浏览器端限制。
+浏览器通过 `GET /api/config` 读取有效上传限制，与服务端字节上限一致；配置读取失败时可重试，恢复前不会上传。非法端口、路径、大小和代理配置会阻止启动。
 
 ## 测试
 
 ```bash
 npm test
+npm run typecheck
+npm run format:check
+npm run test:browser
 ```
 
-使用 Node 内置 test runner 自动发现测试（`node --test`）。覆盖路由与静态文件、上传校验、限流、临时文件清理、软链启动、真实 JPEG 解析、厂商标签优先级与计数合理范围。诊断回归测试覆盖请求 ID 关联、安全的失败分类，以及诊断输出不包含照片内容和私密元数据。
+使用 Node 内置 test runner 运行 `dist/test/` 下编译后的测试。`npm test` 先构建；`npm run test:built` 复用完成的构建。构建后可用 `node --test dist/test/mapping.test.js` 单独验证映射。覆盖路由与静态文件、上传校验、限流、临时文件清理、软链启动、真实 JPEG 解析、厂商标签优先级与计数合理范围。诊断回归测试覆盖请求 ID 关联、安全的失败分类，以及诊断输出不包含照片内容和私密元数据。
+
+浏览器测试使用本机已安装的 Chrome（可设置 `CHROME_PATH`），会新建隔离会话，覆盖真实上传、取消、重试、诊断、键盘操作和移动端布局。测试期间拦截所有外部请求，包括百度统计。无须下载浏览器。
+
+CI 在构建前记录 `REVISION`，并执行 `npm run test:production`。该检查在临时目录只安装生产依赖，核验复制的版本号、稳定引导入口、静态资源、有效上传配置、Nikon 计数 526 和正常关闭。本地运行方式：
+
+```bash
+git rev-parse HEAD > REVISION
+npm run build
+npm run test:production
+```
 
 ### 冒烟测试运行中的实例
 
@@ -270,3 +295,5 @@ pm2 logs shutter-count
 - 不设图片数据库，不主动长期归档图片。返回给上传者的解析结果可能包含清理后的文件名和选定的相机元数据；服务端诊断事件与界面复制的诊断报告不会包含这些值。
 - 诊断使用允许的分类与摘要，不记录照片字节、完整 EXIF、原始异常信息或堆栈。请求 ID 仅用于关联事件，没有新增照片下载/历史记录 API。
 - 反向代理、进程管理器、托管平台与备份的日志/存储有各自的策略，部署时需单独检查。
+
+容量达到上限或等待超时时，解析接口返回 HTTP 503 / `error` / `busy`，日志使用 `parser_queue_full`、`parser_queue_timeout` 或 `parser_closed`。应用按实例关闭 ExifTool；SIGINT/SIGTERM 触发最多 20 秒的清理，PM2 `kill_timeout` 必须为 25000 ms，见部署指南。

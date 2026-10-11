@@ -23,9 +23,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run format:check
+      - name: Record the revision before building
+        run: printf '%s\n' "$GITHUB_SHA" > REVISION
       - run: npm test
+      - run: npm run test:browser
+      - run: npm run test:production
+      - run: npm audit --omit=dev --audit-level=high
       - run: bash -n scripts/deploy-release.sh
-      - run: node --check scripts/receive-deploy.mjs && node --check scripts/deploy-ssh.mjs
+      - run: node --check dist/trusted/receive-deploy.mjs && node --check dist/trusted/deploy-ssh.mjs && node --check dist/trusted/deploy-guard.mjs
 
   deploy:
     needs: test
@@ -49,6 +56,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build:trusted
       - name: Ignore an obsolete run instead of rolling production backwards
         id: latest
         env:
@@ -69,4 +78,4 @@ jobs:
           DEPLOY_PUBLIC_URL: ${{ vars.SHUTTER_DEPLOY_PUBLIC_URL }}
           DEPLOY_SSH_KEY: ${{ secrets.SHUTTER_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ vars.SHUTTER_DEPLOY_KNOWN_HOSTS }}
-        run: node scripts/deploy-ssh.mjs
+        run: node dist/trusted/deploy-ssh.mjs

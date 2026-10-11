@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="ShutterCount — 上传一张相机直出原图（JPG/JPEG），读取机身型号、快门次数与拍摄时间。图片仅临时解析，不长期保存。"
+    />
+    <meta name="theme-color" content="#0c0d0f" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>ShutterCount · 查看相机快门次数</title>
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?f4b1d2fc4d60c37f898b469f83237dab";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  </head>
+  <body>
+    <div class="upload-screen">
+      <div class="upload-card">
+        <div class="brand-mark" aria-hidden="true">SC</div>
+        <p class="eyebrow">ShutterCount</p>
+        <h1>查看相机快门次数</h1>
+        <p class="upload-intro" id="intro" tabindex="-1">
+          上传一张相机原图，读取机身与快门计数。
+        </p>
+
+        <!-- Body section: swapped between upload / loading / success / fail / error -->
+        <div id="stage">
+          <div
+            class="upload-dropzone"
+            role="button"
+            tabindex="0"
+            aria-label="点击或拖放原图到这里"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 16V4m0 0 4 4m-4-4-4 4"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M4 14v4.2A1.8 1.8 0 0 0 5.8 20h12.4a1.8 1.8 0 0 0 1.8-1.8V14"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+            </svg>
+            <strong>点击或拖放原图到这里</strong>
+            <span>支持 JPG、JPEG，建议相机直出原图</span>
+          </div>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 3 5 6.5v5.2c0 4.1 2.8 7.9 7 8.8 4.2-.9 7-4.7 7-8.8V6.5L12 3Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M9.5 12.2 11.2 14l3.5-3.8"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            图片仅临时解析，不长期保存
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <input
+      type="file"
+      id="file-input"
+      class="visually-hidden"
+      accept=".jpg,.jpeg,image/jpeg"
+      tabindex="-1"
+      aria-hidden="true"
+    />
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

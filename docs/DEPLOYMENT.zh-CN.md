@@ -10,23 +10,42 @@
 deploy <完整 40 位 commit SHA> <GitHub run ID> <run attempt>
 ```
 
-SSH 用户固定为 `shutter-deploy`，客户端不能指定仓库、服务器路径、执行程序、环境或上传脚本。管理员安装的固定接收器独立核验公开仓库的当前 main、指定 run/attempt 及其 `test` job 成功结果。GitHub API 出错或限流时停止，不冒险发布；服务器不保存 GitHub token。
+SSH 用户固定为 `shutter-deploy`，客户端不能指定仓库、服务器路径、执行程序、环境或上传脚本。管理员安装的固定接收器独立核验公开仓库的当前 main、指定 run/attempt 及其 `test` job 成功结果。运行授权 API 出错或限流时停止；当前 main API 失败时使用下文的 Git 校验回退；服务器不保存 GitHub token。
 
 接收器拉取精确提交、校验对象并解出干净源码。服务器按锁文件安装依赖并重跑测试。root 管理的发布脚本在切换前再次检查 main，然后原子切换 current，仅重启已核验的 Shutter PM2 ID，检查内网/公网页面、ExifTool 健康及运行中的精确 revision。激活后失败会恢复旧版本并核验其内网健康，旧目录保留。
 
 GitHub 部署并发组不会取消正在进行的发布，服务器另有 flock 锁。main 前进后，旧排队/准备中的版本不会覆盖新版。GitHub 可能替换待执行任务，因此保证趋向最新通过测试的版本，不承诺上线每个中间提交。PM2 单进程重启可能短暂中断，不是零停机发布。
+
+## TypeScript 发布的构建前提
+
+应用现在从 `dist/` 启动。部署此次迁移前，管理员必须把已审阅的 `dist/trusted/` 发布控制产物安装到可信目录。现有主机发布脚本不会随仓库修改更新，仅安装生产依赖无法构建新应用。
+
+新脚本先执行 `npm ci`、类型检查、Node/Vite 构建、编译后的测试，再执行 `npm prune --omit=dev`，最后切换版本。任一准备步骤失败都不会改动 `current`。稳定的 `current/bin/start.mjs` 引导入口使用生产依赖运行编译产物；`REVISION` 会复制到构建目录，供精确版本健康检查使用。接收器与可信健康检查器保持原文件名；Bash 内嵌的 Node 校验已迁移为独立 `deploy-guard.mjs`，必须一同安装。
+
+### 迁移时的独立管理员升级
+
+在已审阅的本地源码上运行 `npm ci && npm run typecheck && npm run build:trusted`。`dist/trusted/` 中四个 `.mjs` 只依赖 Node 内置模块，附带 `SHA256SUMS`。接收器和辅助工具的实现与依赖均独立打包，不能从应用可写目录解析它们。PM2 守卫仍会以专用应用账号执行已审阅候选版本的 `ecosystem.config.cjs`；发布准备也会在该账号下执行候选版本的依赖安装钩子和测试。
+
+1. 记录原 `current` 的真实路径和 SHA，并备份可信目录中的接收器、检查器、发布脚本及现有 PM2 配置。备份由管理员保存在应用不可写的位置。
+2. 在维护窗口暂停自动发布（若已启用），确认没有发布占用锁。管理员审阅构建产物和校验清单，以 root 所有者及 0755 权限安装 `receive-deploy.mjs`、`check-deploy.mjs`、`deploy-guard.mjs`、`deploy-release.sh` 到 `/usr/local/libexec/shutter-count/`。固定 launcher、`receive-node` 和专用账号保持已核验的配置。
+3. 管理员把主机 PM2 配置中的 `kill_timeout` 更新为 25000；由 PM2 所属账号仅重新加载 Shutter 的已核验稳定配置。核验实际 `pm2_env.kill_timeout`、解释器、current 工作目录、`current/bin/start.mjs` 与环境。PM2 配置文件修改并不自动改变运行中的设置，新发布脚本会拒绝不一致状态。
+4. 验证主机 Node 22、构建空间和超时预算。恢复自动发布前，用已通过 CI 的迁移版本验证本地/公网精确 SHA 和健康失败回滚。生产应用经过构建与裁剪，运行时不依赖 tsx、TypeScript 或 Vite。
+
+升级控制脚本失败时，管理员恢复备份的可信文件与 PM2 配置；应用激活失败时由发布脚本恢复原 `current`。若回滚未通过健康检查，暂停后续发布并核验当前 SHA、单个 PM2 进程及日志。恢复控制脚本与恢复应用版本是两个独立操作。
+
+TypeScript 应用已通过本地检查与 Node 22 PR CI；上述 TypeScript 主机升级操作尚未执行。PR #5 的既有 JavaScript 生产发布是已验证的独立版本。PM2 超时设置参见[官方文档](https://pm2.keymetrics.io/docs/usage/signals-clean-restart/)。
 
 ## 服务器前置条件及管理员设置
 
 这是已有服务的更新工具，不会自动初始化服务器。[deploy/deploy.example.json](../deploy/deploy.example.json) 绑定本项目；配置值是待核验条件，不代表设置已经完成。
 
 - 独立 shutter-deploy 账号、锁密码、无 sudo/特权组，只能写自身应用和状态目录。
-- Node 22 位于 /opt/node-v22.23.2-linux-x64/bin；具备 npm、PM2、Git、Bash、GNU coreutils/tar 和 flock。
+- Node 22 位于 /opt/node-v22.23.2-linux-x64/bin；具备 npm、PM2、Git、curl、Bash、GNU coreutils/tar 和 flock。
 - /opt/shutter-count/current 指向真实 releases/ 中的版本。唯一在线 Shutter PM2 进程使用稳定的 current 工作目录及 current/bin/start.mjs，环境与仓库配置一致，Node 22+。
 - root 管理的 pm2-shutter-deploy.service 仅用 /etc/shutter-count/ecosystem.config.cjs 启动该账号的 PM2。所有权迁移后，root PM2 启动项、主 dump 和备份 dump 不得继续引用 Shutter。发布不运行 pm2 save/restart all，也不以 root 部署。
 - 已有 http://127.0.0.1:3020/shutter 和 https://rende.fun/shutter 路由。日常发布不改 nginx 或防火墙。
 
-获得明确授权后，管理员把审阅通过的 scripts/receive-deploy.mjs、scripts/deploy-release.sh 和 scripts/check-deploy.mjs 安装到 /usr/local/libexec/shutter-count/，把示例 JSON 安装为 /etc/shutter-count/deploy.json。这些文件及上级目录均由 root 拥有，应用账号不可写。发布脚本使用安装目录内可信的健康检查器，而非候选版本提供的脚本。今后更新这些控制脚本需要明确的管理员操作，合并仓库不会悄悄替换它们。
+获得明确授权后，管理员把审阅通过的 dist/trusted/receive-deploy.mjs、dist/trusted/deploy-release.sh、dist/trusted/check-deploy.mjs 和 dist/trusted/deploy-guard.mjs 安装到 /usr/local/libexec/shutter-count/，把示例 JSON 安装为 /etc/shutter-count/deploy.json。这些文件及上级目录均由 root 拥有，应用账号不可写。发布脚本使用安装目录内可信的健康检查器，而非候选版本提供的脚本。今后更新这些控制脚本需要明确的管理员操作，合并仓库不会悄悄替换它们。
 
 公钥保存在可写应用 HOME 之外、由 root 管理的 /etc/ssh/authorized_keys/shutter-deploy，仅一把部署公钥，带 restrict,command="<固定启动器>"。Match User shutter-deploy 专属配置只读这个公钥文件，设置 AuthorizedKeysCommand none 禁用继承的云登录 helper，并 ForceCommand 同一启动器；禁用转发、TTY、user rc、密码/键盘交互认证，仅允许 publickey。先用 sshd -t 及 sshd -T -C 检查当前 OpenSSH 的实际配置和版本支持，再重新加载，并保留其他用户设置。
 
@@ -76,15 +95,18 @@ production 环境变量：
 
 重试 CI 时重跑完整工作流，让同一 attempt 包含成功的 test job。激活失败的恢复日志保存在 /opt/shutter-count/rollback-<release-id>.log。出现 CRITICAL 时，先检查 current、PM2 和健康再发布。断线/HUP/TERM 有恢复测试，但 SIGKILL、断电或磁盘故障仍可能阻止回滚。旧版本保留，不自动清理。设 SHUTTER_DEPLOY_ENABLED=false 只停后续发布，不取消服务器上已进行的操作。
 
+接收器重试依据显式的安全错误分类：API 瞬时状态或传输失败、命令超时及已知 Git 传输失败。对象不存在、权限问题和未分类的子进程失败只尝试一次。接收器不会把原始子进程 stderr 或 API 正文保留在异常或阶段日志中。
+
 ### 更新已安装的接收器（需人工）
 
-合并本仓库不会自动替换 /usr/local/libexec/shutter-count/。若审阅通过的合并改动了 scripts/receive-deploy.mjs、scripts/deploy-release.sh 或 scripts/check-deploy.mjs，管理员须显式将已审阅文件安装到可信目录（保持 root 拥有与既有信任边界），例如：
+合并本仓库不会自动替换 /usr/local/libexec/shutter-count/。若审阅通过的合并改动了 `scripts/receive-deploy.ts`、`scripts/check-deploy.ts`、`scripts/deploy-guard.ts`、其共享模块或 `scripts/deploy-release.sh`，先执行 `npm ci && npm run typecheck && npm run build:trusted`。核对已审阅源码与 `dist/trusted/SHA256SUMS`，再显式将相应构建产物以 root 所有者安装到可信目录，例如：
 
 ```bash
 # 在 ECS 上以 root 执行，并先核验已合并提交 SHA：
-install -o root -g root -m 0755 /path/to/reviewed/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
-install -o root -g root -m 0755 /path/to/reviewed/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
-install -o root -g root -m 0755 /path/to/reviewed/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/receive-deploy.mjs /usr/local/libexec/shutter-count/receive-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-release.sh /usr/local/libexec/shutter-count/deploy-release.sh
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/check-deploy.mjs /usr/local/libexec/shutter-count/check-deploy.mjs
+install -o root -g root -m 0755 /path/to/reviewed/dist/trusted/deploy-guard.mjs /usr/local/libexec/shutter-count/deploy-guard.mjs
 # 核验属主/权限后，再做拒绝用例与一次真实发布验证。
 ```
 

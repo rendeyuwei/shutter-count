@@ -12,6 +12,8 @@ module.exports = {
       instances: 1,
       exec_mode: "fork",
       max_memory_restart: "300M",
+      // Allow the application's bounded 20-second shutdown to finish cleanup.
+      kill_timeout: 25000,
       env: {
         NODE_ENV: "production",
         PORT: 3020,
