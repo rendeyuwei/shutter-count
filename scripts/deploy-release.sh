@@ -20,7 +20,7 @@ public_url=$6
 [[ -d "$root/releases" && ! -L "$root/releases" && -L "$root/current" ]] || die 'An existing releases directory and current symlink are required'
 [[ -f "$source_dir/package-lock.json" && -f "$source_dir/ecosystem.config.cjs" && -f "$source_dir/scripts/check-deploy.mjs" ]] || die 'Incomplete release source'
 [[ -f "$script_dir/check-deploy.mjs" ]] || die 'Missing trusted health checker'
-for command in node npm pm2 flock git timeout; do command -v "$command" >/dev/null || die "Missing $command in non-interactive PATH"; done
+for command in node npm pm2 flock git curl timeout; do command -v "$command" >/dev/null || die "Missing $command in non-interactive PATH"; done
 node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' || die 'Node.js 22 or later is required'
 node --input-type=module - "$base_url" <<'NODE'
 const u = new URL(process.argv[2]);
@@ -111,8 +111,98 @@ printf '%s\n' "$revision" > "$release/REVISION"
 )
 # Recheck after dependency installation/tests, immediately before activation.
 # The receiver also checks before fetching. Never activate an obsolete main.
-latest=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 timeout --signal=TERM --kill-after=5s 60s git ls-remote --exit-code https://github.com/rendeyuwei/shutter-count.git refs/heads/main)
-[[ "$latest" == "$revision"$'\trefs/heads/main' ]] || die 'main advanced or could not be verified; release not activated'
+# Read main from the public ref API first. ECS git ls-remote took ~69s while this API answered in ~0.3s.
+# Fall back to git ls-remote only when the API fails, and leave a host breadcrumb.
+MAIN_REF_URL=https://api.github.com/repos/rendeyuwei/shutter-count/git/ref/heads/main
+
+note_main_api_fallback() {
+  ( umask 077
+    printf '%s\treleaseId=%s\tstage=main-sha-api\terror=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$release_id" \
+      "GitHub main ref API failed; falling back to git ls-remote" \
+      >> "$root/receive-failures.log"
+  ) || true
+}
+
+sha_from_ref_json() {
+  node --input-type=module - "$1" <<'NODE'
+import fs from "node:fs";
+const text = fs.readFileSync(process.argv[2], "utf8");
+if (text.length > 65536) process.exit(2);
+let body;
+try { body = JSON.parse(text); } catch { process.exit(2); }
+const sha = body?.object?.sha;
+if (body?.ref !== "refs/heads/main" || body?.object?.type !== "commit" || !/^[a-f0-9]{40}$/.test(String(sha ?? ""))) process.exit(2);
+process.stdout.write(String(sha));
+NODE
+}
+
+transient_api_failure() {
+  local status=$1 code=$2
+  [[ "$status" == 6 || "$status" == 7 || "$status" == 28 || "$status" == 35 || "$status" == 52 || "$status" == 56 ]] && return 0
+  [[ "$code" == 408 || "$code" == 429 || "$code" == 500 || "$code" == 502 || "$code" == 503 || "$code" == 504 ]] && return 0
+  return 1
+}
+
+api_main_sha() {
+  local attempt status code tmp sha
+  for attempt in 1 2 3; do
+    tmp=$(mktemp)
+    status=0
+    code=$(curl --silent --show-error \
+      --connect-timeout 15 --max-time 15 \
+      --proto '=https' --tlsv1.2 \
+      --header 'Accept: application/vnd.github+json' \
+      --header 'X-GitHub-Api-Version: 2022-11-28' \
+      --header 'User-Agent: shutter-count-deploy-receiver' \
+      --output "$tmp" --write-out '%{http_code}' \
+      -- "$MAIN_REF_URL") || status=$?
+    sha=
+    if (( status == 0 )) && [[ "$code" == "200" ]]; then
+      sha=$(sha_from_ref_json "$tmp") || sha=
+    fi
+    rm -f -- "$tmp"
+    if [[ "$sha" =~ ^[a-f0-9]{40}$ ]]; then
+      printf '%s' "$sha"
+      return 0
+    fi
+    if (( attempt < 3 )) && transient_api_failure "$status" "$code"; then
+      if (( attempt == 1 )); then sleep 2; else sleep 5; fi
+      continue
+    fi
+    return 1
+  done
+  return 1
+}
+
+ls_remote_main() {
+  local attempt latest
+  for attempt in 1 2 3; do
+    if latest=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
+        GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=20 \
+        timeout --signal=TERM --kill-after=5s 90s \
+        git -c http.connectTimeout=30 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 \
+        -c credential.helper= -c core.hooksPath=/dev/null \
+        -c protocol.allow=never -c protocol.https.allow=always \
+        -c http.followRedirects=false \
+        ls-remote --exit-code https://github.com/rendeyuwei/shutter-count.git refs/heads/main); then
+      printf '%s' "$latest"
+      return 0
+    fi
+    if (( attempt < 3 )); then
+      if (( attempt == 1 )); then sleep 2; else sleep 5; fi
+    fi
+  done
+  return 1
+}
+
+if api_sha=$(api_main_sha); then
+  [[ "$api_sha" == "$revision" ]] || die 'main advanced or could not be verified; release not activated'
+else
+  note_main_api_fallback
+  latest=$(ls_remote_main) || latest=
+  [[ "$latest" == "$revision"$'\trefs/heads/main' ]] || die 'main advanced or could not be verified; release not activated'
+fi
 switched=1
 switch_to "$release"
 reload

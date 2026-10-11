@@ -4,9 +4,11 @@ import { EventEmitter } from "node:events";
 import { constants } from "node:fs";
 import {
   CONFIG_PATH, DEPLOY_SCRIPT, EXPECTED_CONFIG, TRUSTED_DIRECTORY, RECEIVER_NODE,
+  FAILURE_LOG_PATH, GIT_COMMAND_TIMEOUT_MS, GIT_RETRY_ATTEMPTS, GIT_RETRY_DELAYS_MS,
   parseCommand, validateConfig, validateIdentity, validateRun, validateJobs,
   validateAuthorization, authorizeDeployment, deploymentEnvironment, verificationEnvironment,
-  assertRootOwnedPath, receiveDeployment, spawnDeployment,
+  assertRootOwnedPath, receiveDeployment, spawnDeployment, verifyCurrentMain,
+  appendFailureLog, runWithRetries, isTransientGitFailure, MAIN_REF_URL,
 } from "../scripts/receive-deploy.mjs";
 
 const sha = "a".repeat(40);
@@ -26,6 +28,10 @@ const validJobs = () => ({ total_count: 2, jobs: [
 ] });
 const response = value => new Response(JSON.stringify(value), { status: 200 });
 const absent = () => Object.assign(new Error("absent"), { code: "ENOENT" });
+const mainRef = (commit = sha) => ({ ref: "refs/heads/main", object: { type: "commit", sha: commit } });
+const fastRetry = (operation, options = {}) => runWithRetries(operation, {
+  ...options, delaysMs: [0, 0], wait: () => Promise.resolve(),
+});
 
 function fixture(overrides = {}) {
   const events = [];
@@ -40,8 +46,10 @@ function fixture(overrides = {}) {
     checkInstallation: async () => { events.push("installation"); },
     request: async (url, options) => {
       requests.push({ url, options });
-      events.push(url.includes("/jobs?") ? "jobs" : "run");
-      return response(url.includes("/jobs?") ? validJobs() : validRun());
+      if (url.includes("/jobs?")) { events.push("jobs"); return response(validJobs()); }
+      if (url === MAIN_REF_URL) { events.push(`main${++remoteChecks}`); return response(mainRef()); }
+      events.push("run");
+      return response(validRun());
     },
     fileSystem: {
       mkdtemp: async prefix => { events.push("temp"); assert.equal(prefix, "/tmp/shutter-count-deploy-"); return "/tmp/shutter-count-deploy-test"; },
@@ -205,6 +213,9 @@ test("child environment is allowlisted and never copies client-supplied settings
   assert.equal(env.GIT_CONFIG_GLOBAL, "/dev/null");
   assert.equal(env.GIT_CONFIG_SYSTEM, "/dev/null");
   assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(env.GIT_HTTP_CONNECTTIMEOUT, "30");
+  assert.equal(env.GIT_HTTP_LOW_SPEED_LIMIT, "1000");
+  assert.equal(env.GIT_HTTP_LOW_SPEED_TIME, "20");
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_ORIGINAL_COMMAND", "NODE_OPTIONS", "BASH_ENV", "LD_PRELOAD", "HTTPS_PROXY", "DEPLOY_ROOT"])
     assert.equal(Object.hasOwn(env, name), false, name);
 });
@@ -217,7 +228,19 @@ test("receiver verifies exact source and current main twice then calls only the 
   assert.equal(f.deployments.length, 1);
   assert.deepEqual(f.deployments[0].args, ["/tmp/shutter-count-deploy-test/source", "/opt/shutter-count", sha, `${sha}-123456-2`, "http://127.0.0.1:3020/shutter", "https://rende.fun/shutter"]);
   assert.deepEqual(f.deployments[0].options.env, deploymentEnvironment());
-  assert.equal(f.commands.filter(item => item.args.includes("ls-remote")).length, 2);
+  assert.equal(f.commands.filter(item => item.args.includes("ls-remote")).length, 0);
+  const refCalls = f.requests.filter(item => item.url === MAIN_REF_URL);
+  assert.equal(refCalls.length, 2);
+  for (const { options } of refCalls) {
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.headers.Accept, "application/vnd.github+json");
+    assert.equal(options.headers["X-GitHub-Api-Version"], "2022-11-28");
+    assert.equal(Object.keys(options.headers).some(key => key.toLowerCase() === "authorization"), false);
+  }
   for (const item of f.commands) {
     assert.ok(["/usr/bin/git", "/usr/bin/tar"].includes(item.executable));
     assert.deepEqual(item.options.env, verificationEnvironment());
@@ -225,6 +248,9 @@ test("receiver verifies exact source and current main twice then calls only the 
   }
   const fetchArgs = f.commands.find(item => item.args.includes("fetch")).args;
   assert.deepEqual(fetchArgs.slice(-6), ["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "https://github.com/rendeyuwei/shutter-count.git", sha]);
+  assert.ok(fetchArgs.includes("http.lowSpeedLimit=1000"));
+  assert.ok(fetchArgs.includes("http.lowSpeedTime=20"));
+  assert.equal(fetchArgs.includes("http.lowSpeedTime=60"), false);
   assert.ok(fetchArgs.includes("core.hooksPath=/dev/null"));
   assert.ok(fetchArgs.includes("credential.helper="));
   assert.ok(fetchArgs.includes("http.followRedirects=false"));
@@ -257,21 +283,42 @@ test("failed GitHub authorization prevents fetching and activation", async () =>
 
 for (const checkNumber of [1, 2]) test(`stale main at check ${checkNumber} never activates`, async () => {
   const f = fixture();
-  const run = f.dependencies.runCommand;
+  const request = f.dependencies.request;
   let checks = 0;
-  f.dependencies.runCommand = async (...args) => {
-    const output = await run(...args);
-    return args[1].includes("ls-remote") && ++checks === checkNumber ? `${otherSha}\trefs/heads/main\n` : output;
+  f.dependencies.request = async (url, options) => {
+    if (url === MAIN_REF_URL && ++checks === checkNumber) return response(mainRef(otherSha));
+    return request(url, options);
   };
+  f.dependencies.retry = (operation, options = {}) => runWithRetries(operation, {
+    ...options, delaysMs: [0, 0], wait: () => assert.fail("must not delay on stale main"),
+  });
   await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /no longer current main/);
+  assert.equal(checks, checkNumber);
+  assert.equal(f.commands.filter(item => item.args.includes("ls-remote")).length, 0);
   assert.equal(f.deployments.length, 0);
   assert.equal(f.events.includes("temp"), checkNumber === 2);
   assert.equal(f.removals.length, checkNumber === 2 ? 1 : 0);
 });
 
-test("an extra ls-remote row is not accepted as verification", async () => {
-  const f = fixture({ runCommand: async () => `${sha}\trefs/heads/main\n${otherSha}\trefs/heads/main\n` });
+test("an extra ls-remote row is not accepted when the ref API falls back", async () => {
+  const f = fixture();
+  const request = f.dependencies.request;
+  const run = f.dependencies.runCommand;
+  let apiSeen = false;
+  f.dependencies.request = async (url, options) => {
+    if (url === MAIN_REF_URL) { apiSeen = true; return new Response("missing", { status: 404 }); }
+    return request(url, options);
+  };
+  f.dependencies.retry = fastRetry;
+  f.dependencies.runCommand = async (executable, args, options) => {
+    if (args.includes("ls-remote")) {
+      assert.equal(apiSeen, true);
+      return `${sha}\trefs/heads/main\n${otherSha}\trefs/heads/main\n`;
+    }
+    return run(executable, args, options);
+  };
   await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /current main/);
+  assert.equal(apiSeen, true);
   assert.equal(f.deployments.length, 0);
 });
 
@@ -436,6 +483,178 @@ test("successful child output goes only to the persistent host log and closes af
   assert.equal(f.removals.length, 1);
 });
 
+
+
+test("git command timeout is bounded above the prior 120s Hangzhou spike ceiling", () => {
+  assert.equal(GIT_COMMAND_TIMEOUT_MS, 180_000);
+  assert.equal(GIT_RETRY_ATTEMPTS, 3);
+  assert.deepEqual([...GIT_RETRY_DELAYS_MS], [2_000, 5_000]);
+  assert.equal(FAILURE_LOG_PATH, "/opt/shutter-count/receive-failures.log");
+});
+
+test("transient git failures are retried with backoff; deterministic mismatches are not", async () => {
+  assert.equal(isTransientGitFailure(new Error("Host source verification timed out")), true);
+  assert.equal(isTransientGitFailure(new Error("Host source verification failed")), true);
+  assert.equal(isTransientGitFailure(new Error("Requested commit is no longer current main")), false);
+  const delays = [];
+  let attempts = 0;
+  await assert.rejects(runWithRetries(async () => {
+    attempts++;
+    throw new Error("Host source verification timed out");
+  }, { attempts: 3, delaysMs: [1, 2], wait: ms => { delays.push(ms); return Promise.resolve(); } }), /timed out/);
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1, 2]);
+  attempts = 0;
+  await assert.rejects(runWithRetries(async () => {
+    attempts++;
+    throw new Error("Requested commit is no longer current main");
+  }, { attempts: 3, delaysMs: [1, 2], wait: () => assert.fail("must not delay") }), /no longer current main/);
+  assert.equal(attempts, 1);
+});
+
+test("appendFailureLog writes a single sanitized line and never throws", async () => {
+  const writes = [];
+  await appendFailureLog(
+    { releaseId: command.releaseId, stage: "git-fetch", error: new Error("Host source verification timed out\nSECRET") },
+    { fileSystem: { appendFile: async (filename, line, options) => { writes.push({ filename, line, options }); } },
+      logPath: "/tmp/receive-failures.test.log" },
+  );
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].filename, "/tmp/receive-failures.test.log");
+  assert.equal(writes[0].options.flag, "a");
+  assert.match(writes[0].line, new RegExp(`^\\d{4}-.+\treleaseId=${command.releaseId}\tstage=git-fetch\terror=Host source verification timed out SECRET\n$`));
+  assert.ok(!writes[0].line.includes("\nSECRET"));
+  await appendFailureLog({ releaseId: "bad", stage: "x;rm", error: "ok" }, {
+    fileSystem: { appendFile: async () => { throw new Error("disk full"); } },
+  });
+});
+
+test("pre-git failures record stage breadcrumbs without creating deploy logs", async () => {
+  const failures = [];
+  const f = fixture();
+  const request = f.dependencies.request;
+  let apiCalls = 0;
+  f.dependencies.request = async (url, options) => {
+    if (url === MAIN_REF_URL) {
+      apiCalls++;
+      throw Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" });
+    }
+    return request(url, options);
+  };
+  f.dependencies.runCommand = async () => { throw new Error("Host source verification timed out"); };
+  f.dependencies.recordFailure = async entry => { failures.push(entry); };
+  f.dependencies.retry = fastRetry;
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /main-sha.*timed out/);
+  assert.equal(apiCalls, GIT_RETRY_ATTEMPTS);
+  assert.equal(f.deployments.length, 0);
+  assert.equal(failures.some(entry => entry.stage === "main-sha-api"), true);
+  const finalFailure = failures.at(-1);
+  assert.equal(finalFailure.stage, "main-sha");
+  assert.equal(finalFailure.releaseId, command.releaseId);
+  assert.match(String(finalFailure.error.message ?? finalFailure.error), /timed out/);
+});
+
+test("git fetch retries transient failures then records the stage on exhaustion", async () => {
+  const failures = [];
+  const f = fixture();
+  const run = f.dependencies.runCommand;
+  let fetchCalls = 0;
+  const delays = [];
+  f.dependencies.retry = (operation, options = {}) => runWithRetries(operation, {
+    ...options, delaysMs: [0, 0], wait: ms => { delays.push(ms); return Promise.resolve(); },
+  });
+  f.dependencies.recordFailure = async entry => { failures.push(entry); };
+  f.dependencies.runCommand = async (...args) => {
+    if (args[1].includes("fetch")) {
+      fetchCalls++;
+      throw new Error("Host source verification failed");
+    }
+    return run(...args);
+  };
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /git-fetch/);
+  assert.equal(fetchCalls, GIT_RETRY_ATTEMPTS);
+  assert.equal(delays.length, GIT_RETRY_ATTEMPTS - 1);
+  assert.equal(f.deployments.length, 0);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].stage, "git-fetch");
+  assert.equal(f.removals.length, 1);
+});
+
+test("stale main is not retried as a transport failure", async () => {
+  const f = fixture();
+  const request = f.dependencies.request;
+  let apiCalls = 0;
+  f.dependencies.retry = (operation, options = {}) => runWithRetries(operation, {
+    ...options, delaysMs: [0, 0], wait: () => assert.fail("must not delay on stale main"),
+  });
+  f.dependencies.request = async (url, options) => {
+    if (url === MAIN_REF_URL) { apiCalls++; return response(mainRef(otherSha)); }
+    return request(url, options);
+  };
+  await assert.rejects(receiveDeployment(originalCommand, f.dependencies), /no longer current main/);
+  assert.equal(apiCalls, 1);
+  assert.equal(f.commands.filter(item => item.args.includes("ls-remote")).length, 0);
+  assert.equal(f.deployments.length, 0);
+});
+
+test("current main is read from the GitHub ref API without git ls-remote", async () => {
+  const calls = [];
+  await verifyCurrentMain(command, async () => { throw new Error("ls-remote must not run"); }, {}, {
+    request: async url => { calls.push(url); return response(mainRef()); },
+    retry: fastRetry,
+  });
+  assert.deepEqual(calls, [MAIN_REF_URL]);
+});
+
+test("transient main-ref failures retry, then fall back to ls-remote and are logged", async () => {
+  let apiCalls = 0;
+  let lsRemoteCalls = 0;
+  const logs = [];
+  await verifyCurrentMain(command, async (_executable, args) => {
+    assert.ok(args.includes("ls-remote"));
+    assert.ok(args.includes("http.lowSpeedTime=20"));
+    lsRemoteCalls++;
+    return `${sha}\trefs/heads/main\n`;
+  }, {}, {
+    request: async () => { apiCalls++; throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }); },
+    retry: fastRetry,
+    recordFallback: async entry => { logs.push(entry); },
+  });
+  assert.equal(apiCalls, GIT_RETRY_ATTEMPTS);
+  assert.equal(lsRemoteCalls, 1);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].stage, "main-sha-api");
+  assert.equal(logs[0].releaseId, command.releaseId);
+  assert.match(String(logs[0].error.message), /falling back to git ls-remote/);
+});
+
+test("HTTP 503 on the main ref is retried and does not fall back after recovery", async () => {
+  let apiCalls = 0;
+  await verifyCurrentMain(command, async () => { throw new Error("ls-remote must not run"); }, {}, {
+    request: async () => {
+      apiCalls++;
+      if (apiCalls < 3) return new Response("unavailable", { status: 503 });
+      return response(mainRef());
+    },
+    retry: fastRetry,
+    recordFallback: async () => { throw new Error("must not fall back"); },
+  });
+  assert.equal(apiCalls, 3);
+});
+
+test("a non-transient ref API failure falls back once without retrying", async () => {
+  let apiCalls = 0;
+  let lsRemoteCalls = 0;
+  await verifyCurrentMain(command, async () => { lsRemoteCalls++; return `${sha}\trefs/heads/main\n`; }, {}, {
+    request: async () => { apiCalls++; return new Response("missing", { status: 404 }); },
+    retry: (operation, options = {}) => runWithRetries(operation, {
+      ...options, delaysMs: [0, 0], wait: () => assert.fail("must not delay on a non-transient API failure"),
+    }),
+    recordFallback: async entry => { assert.equal(entry.stage, "main-sha-api"); },
+  });
+  assert.equal(apiCalls, 1);
+  assert.equal(lsRemoteCalls, 1);
+});
 
 test("verification gate uses a protected interpreter and system-only tool PATH", () => {
   assert.equal(RECEIVER_NODE, "/usr/local/libexec/shutter-count/receive-node");

@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { checkDeployment } from "./check-deploy.mjs";
 
 const SIGNALS = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
-const SSH_FAILURE = "SSH deployment was not confirmed and was not retried. Remote work may still be running; inspect the server before rerunning. Diagnostic output was withheld.";
+const SSH_FAILURE = "SSH deployment was not confirmed and was not retried. Remote work may still be running; inspect the server before rerunning (check /opt/shutter-count/receive-failures.log for pre-deploy receiver failures). Diagnostic output was withheld.";
 const KEY_TYPES = new Set(["ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com"]);
 
 // Never expose child-process errors, server output, or rejected setting values.
