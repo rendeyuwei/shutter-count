@@ -13,8 +13,9 @@ for (const name of [
   "deploy-guard",
   "deploy-ssh",
 ]) {
+  const entry = name === "check-deploy" ? "check-deploy-cli" : name;
   const result = await build({
-    entryPoints: [path.join(root, "scripts", name + ".ts")],
+    entryPoints: [path.join(root, "scripts", entry + ".ts")],
     outfile: path.join(output, name + ".mjs"),
     bundle: true,
     platform: "node",
