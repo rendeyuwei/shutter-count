@@ -1,0 +1,44 @@
+name: Test and deploy
+
+# Call the shared workflow only from main. A same-repo pull_request trigger
+# would be eligible for the deploy secrets. Pull request checks are in ci.yml.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rende-deploy-shutter
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: rendeyuwei/rende-deploy/.github/workflows/deploy-project.yml@main
+    with:
+      project: shutter
+      node_version: "22"
+      # The apex path answers 308 to the trailing slash. curl does not follow it.
+      health_url: https://rende.fun/shutter/
+      # npm test already builds. Skip the shared workflow's second build.
+      build_command: ""
+      test_command: |
+        set -euo pipefail
+        npm run typecheck
+        npm run format:check
+        printf '%s\n' "$GITHUB_SHA" > REVISION
+        npm test
+        npm run test:browser
+        npm run test:production
+        npm audit --omit=dev --audit-level=high
+        bash -n scripts/deploy-release.sh
+        node --check dist/trusted/receive-deploy.mjs
+        node --check dist/trusted/deploy-ssh.mjs
+        node --check dist/trusted/deploy-guard.mjs
+    secrets:
+      ECS_HOST: ${{ secrets.ECS_HOST }}
+      ECS_USER: ${{ secrets.ECS_USER }}
+      ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+      ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}

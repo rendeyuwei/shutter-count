@@ -271,7 +271,7 @@ PM2 日志文件通常会跨应用重启保留，但这不是备份或保留时�
 
 ## 部署约定
 
-经过测试的版本发布与 GitHub Actions 配置见[自动部署说明](docs/DEPLOYMENT.zh-CN.md)（[English](docs/DEPLOYMENT.md)）。默认关闭自动部署，须核实主机并明确启用；仅添加工作流不会部署或授予访问权限。
+经过测试的 `main` 提交通过 [rendeyuwei/rende-deploy](https://github.com/rendeyuwei/rende-deploy) 的共享工作流部署。[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 在推送到 `main` 或手动运行时，以 `project: shutter` 调用 `deploy-project.yml`。测试完成后再部署，`main` 上测试成功后总会发布。主机和四项 `ECS_*` 密钥的设置见[自动部署说明](docs/DEPLOYMENT.zh-CN.md)（[English](docs/DEPLOYMENT.md)）。
 
 仓库记录了面向 `rende.fun` 的以下部署布局；这些配置并不证明线上当前状态或已部署版本。
 

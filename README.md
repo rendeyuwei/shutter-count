@@ -271,7 +271,7 @@ If there is no matching event, check the instance and log destination, whether l
 
 ## Deployment conventions
 
-For tested-commit releases and GitHub Actions setup, see [automatic deployment](docs/DEPLOYMENT.md) ([简体中文](docs/DEPLOYMENT.zh-CN.md)). Automatic deployment is off until an operator verifies the host and explicitly enables its configuration; adding the workflow alone does not deploy or grant access.
+Tested `main` commits deploy through the shared workflow in [rendeyuwei/rende-deploy](https://github.com/rendeyuwei/rende-deploy). [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) calls `deploy-project.yml` with `project: shutter` on a push to `main` and on a manual run. Tests finish before deploy, and a successful test on `main` always deploys. Setup for the host and the four `ECS_*` secrets is in [automatic deployment](docs/DEPLOYMENT.md) ([简体中文](docs/DEPLOYMENT.zh-CN.md)).
 
 The repository documents this deployment layout for `rende.fun`; these settings do not verify the state or version of a running deployment.
 
