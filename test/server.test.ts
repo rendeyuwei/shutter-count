@@ -110,6 +110,7 @@ test("GET /shutter/ -> 200 html with the product title", async () => {
   assert.equal(res.statusCode, 200);
   assert.match(String(res.headers["content-type"]), /text\/html/);
   assert.match(res.body, /查看相机快门次数/);
+  assert.match(res.body, /<script src="\/shell\/topbar\.js" defer><\/script>/);
 });
 
 test("GET /shutter/app.js -> 200 javascript", async () => {
@@ -126,6 +127,8 @@ test("GET /shutter/styles.css -> 200 css", async () => {
   assert.equal(res.statusCode, 200);
   assert.match(String(res.headers["content-type"]), /text\/css/);
   assert.match(res.body, /--accent:\s*#efac4b/);
+  assert.match(res.body, /padding-top:\s*var\(--rf-h,\s*0px\)/);
+  assert.match(res.body, /min-height:\s*calc\(100dvh - var\(--rf-h,\s*0px\)\)/);
 });
 
 test("built browser assets resolve under root and custom mounts", async () => {
