@@ -110,7 +110,7 @@ Every API response produced by the application, including errors and health chec
 
 ### `GET /shutter/api/health`
 
-Returns HTTP 200 with `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`. `revision` is a commit SHA string when the release contains a valid `REVISION` file, or JSON `null` in a normal local checkout. It is captured at process startup so an old process cannot claim a new release after a symlink switch. If ExifTool is unavailable, returns HTTP 500 with `{ "status": "error", "requestId": "<uuid>" }`. The same request ID is in the response header.
+Returns HTTP 200 with `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`. `revision` is a commit SHA string when `dist/REVISION` contains one, or when that file is absent and the release-root `REVISION` does. It is JSON `null` in a normal local checkout. It is captured at process startup so an old process cannot claim a new release after a symlink switch. If ExifTool is unavailable, returns HTTP 500 with `{ "status": "error", "requestId": "<uuid>" }`. The same request ID is in the response header.
 
 ```bash
 curl -i http://127.0.0.1:3020/shutter/api/health

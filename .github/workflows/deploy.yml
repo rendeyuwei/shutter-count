@@ -10,8 +10,11 @@ on:
 permissions:
   contents: read
 
+# The caller's concurrency group does not use rende-deploy-shutter: the called
+# workflow already occupies that name. The same group waits on itself and the
+# run fails immediately with no jobs.
 concurrency:
-  group: rende-deploy-shutter
+  group: shutter-deploy-caller
   cancel-in-progress: false
 
 jobs:
