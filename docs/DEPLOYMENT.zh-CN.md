@@ -18,7 +18,7 @@ uses: rendeyuwei/rende-deploy/.github/workflows/deploy-project.yml@main
 deploy shutter <40 位十六进制 SHA>
 ```
 
-部署任务等待该测试任务完成。`main` 上测试成功后总会部署。并发设置为 `cancel-in-progress: false`，新的推送会等待已经开始的部署。
+部署任务等待该测试任务完成。`main` 上测试成功后总会部署。调用方并发组是 `shutter-deploy-caller`，`cancel-in-progress: false`，新的推送会等待已经开始的部署。共享工作流已经使用 `rende-deploy-shutter`；调用方再用这个名字会自己等待自己，运行会以 0 个任务结束。
 
 ECS 按 `/etc/rende-deploy/projects/shutter.conf` 里的 `build` 行编译。修改 runner 的 `test_command` 不会改变这条服务器命令。
 
@@ -37,7 +37,7 @@ ECS 按 `/etc/rende-deploy/projects/shutter.conf` 里的 `build` 行编译。修
 
 ## 主机
 
-项目 id `shutter` 对应 ECS 上的 `/etc/rende-deploy/projects/shutter.conf`。目录是 `/opt/shutter-count`，PM2 应用名是 `shutter-count`，接收器的健康检查是 `http://127.0.0.1:3020/shutter`。SSH 成功后，runner 还会请求 `https://rende.fun/shutter/`。不带结尾斜线的路径返回 308，runner 不会跟随重定向。接收器、强制命令和项目配置的安装方式见 rende-deploy。合并本仓库不会更新 `/usr/local/libexec/`。
+项目 id `shutter` 对应 ECS 上的 `/etc/rende-deploy/projects/shutter.conf`。目录是 `/opt/shutter-count`，PM2 应用名是 `shutter-count`，接收器的健康检查是 `http://127.0.0.1:3020/shutter`。SSH 成功后，runner 还会请求 `https://rende.fun/shutter/`。健康检查在进程启动时读取 `dist/REVISION`；该文件不存在时，改读共享接收器在构建之后写到发布根目录的 `REVISION`。不带结尾斜线的路径返回 308，runner 不会跟随重定向。接收器、强制命令和项目配置的安装方式见 rende-deploy。合并本仓库不会更新 `/usr/local/libexec/`。
 
 `/opt/shutter-count` 必须可由 `rende-deploy` 写入。第一次通过共享流程部署前，所有权可能需要从 `shutter-deploy` 改为 `rende-deploy`。PM2 进程必须使用 `/opt/shutter-count/current`，这样重启才会跟随软链。PM2 `kill_timeout` 保持 `25000`，以便应用完成最多 20 秒的关闭清理。
 

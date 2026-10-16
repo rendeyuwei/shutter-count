@@ -110,7 +110,7 @@ npm run smoke -- test/fixtures/NikonD70.jpg
 
 ### `GET /shutter/api/health`
 
-正常返回 HTTP 200 和 `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`。发布目录有有效 `REVISION` 文件时，`revision` 为 commit SHA 字符串；普通本地 checkout 中为 JSON `null`。该值在进程启动时读取，避免切换软链后旧进程冒认新版本。ExifTool 不可用时返回 HTTP 500 和 `{ "status": "error", "requestId": "<uuid>" }`。其中 `<version>` 为版本号，`<uuid>` 为请求 ID，同一 ID 也出现在响应头中。
+正常返回 HTTP 200 和 `{ "status": "ok", "exiftool": "<version>", "revision": "<commit-sha-or-null>", "requestId": "<uuid>" }`。`dist/REVISION` 含有效 commit SHA 时，`revision` 为该字符串；该文件不存在时，则使用发布根目录的 `REVISION`。普通本地 checkout 中为 JSON `null`。该值在进程启动时读取，避免切换软链后旧进程冒认新版本。ExifTool 不可用时返回 HTTP 500 和 `{ "status": "error", "requestId": "<uuid>" }`。其中 `<version>` 为版本号，`<uuid>` 为请求 ID，同一 ID 也出现在响应头中。
 
 ```bash
 curl -i http://127.0.0.1:3020/shutter/api/health

@@ -43,15 +43,38 @@ export interface AppOptions extends ConfigOptions {
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
+const REVISION_SHA = /^[a-f0-9]{40}$/;
+
+function readRevisionFile(file: string): {
+  missing: boolean;
+  revision: string | null;
+} {
+  try {
+    const value = fs.readFileSync(file, "utf8").trim();
+    return {
+      missing: false,
+      revision: REVISION_SHA.test(value) ? value : null,
+    };
+  } catch (error) {
+    const missing =
+      error instanceof Error && "code" in error && error.code === "ENOENT";
+    return { missing, revision: null };
+  }
+}
+
 // Captured once at startup: a symlink switch must not make an old process
-// report the new release. Local checkouts do not need a REVISION file.
-let releaseRevision: string | null = null;
-try {
-  const value = fs
-    .readFileSync(path.join(__dirname, "..", "REVISION"), "utf8")
-    .trim();
-  if (/^[a-f0-9]{40}$/.test(value)) releaseRevision = value;
-} catch {}
+// report the new release. The compiled module lives in dist/src, so the build
+// copy is dist/REVISION. The shared receiver writes REVISION at the release
+// root after the build; use that file when the build copy is absent. Local
+// checkouts do not need a REVISION file.
+export function readReleaseRevision(moduleDir: string): string | null {
+  const compiled = readRevisionFile(path.join(moduleDir, "..", "REVISION"));
+  if (!compiled.missing) return compiled.revision;
+  return readRevisionFile(path.join(moduleDir, "..", "..", "REVISION"))
+    .revision;
+}
+
+const releaseRevision = readReleaseRevision(__dirname);
 
 export function buildApp(opts: AppOptions = {}) {
   const config = readConfig(opts);

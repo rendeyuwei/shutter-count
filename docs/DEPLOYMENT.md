@@ -18,7 +18,7 @@ with `project: shutter`. The shared workflow installs dependencies, runs this re
 deploy shutter <40-hex-sha>
 ```
 
-The deploy job waits for that test job. A successful test on `main` always deploys. Concurrency uses `cancel-in-progress: false`, so a newer push waits for the deployment already in progress.
+The deploy job waits for that test job. A successful test on `main` always deploys. The caller concurrency group is `shutter-deploy-caller` with `cancel-in-progress: false`, so a newer push waits for the deployment already in progress. The shared workflow already uses `rende-deploy-shutter`; reusing that name makes the run wait on itself and finish with no jobs.
 
 The ECS compiles with the `build` line in `/etc/rende-deploy/projects/shutter.conf`. Changing the runner `test_command` leaves that server command as it is.
 
@@ -37,7 +37,7 @@ Repository secrets, the same four values used by the other rende.fun callers:
 
 ## Host
 
-Project id `shutter` is `/etc/rende-deploy/projects/shutter.conf` on the ECS. The tree is `/opt/shutter-count`, the PM2 app name is `shutter-count`, and the receiver's health check is `http://127.0.0.1:3020/shutter`. After SSH succeeds, the runner also requests `https://rende.fun/shutter/`. The path without the trailing slash answers 308, and the runner does not follow redirects. Installing the receiver, the forced command, and the project config is documented in rende-deploy. Merging this repository does not update `/usr/local/libexec/`.
+Project id `shutter` is `/etc/rende-deploy/projects/shutter.conf` on the ECS. The tree is `/opt/shutter-count`, the PM2 app name is `shutter-count`, and the receiver's health check is `http://127.0.0.1:3020/shutter`. After SSH succeeds, the runner also requests `https://rende.fun/shutter/`. Health reads `dist/REVISION` at process startup and, when that file is absent, the `REVISION` file the shared receiver writes at the release root after the build. The path without the trailing slash answers 308, and the runner does not follow redirects. Installing the receiver, the forced command, and the project config is documented in rende-deploy. Merging this repository does not update `/usr/local/libexec/`.
 
 `/opt/shutter-count` has to be writable by `rende-deploy`. Ownership may need to move from `shutter-deploy` to `rende-deploy` before the first shared deploy. The PM2 process must use `/opt/shutter-count/current` so a restart follows the symlink. Keep PM2 `kill_timeout` at `25000` so the application's 20-second shutdown can finish.
 
