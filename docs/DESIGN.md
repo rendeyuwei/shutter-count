@@ -42,7 +42,7 @@
 5. **主体区**：dropzone / 结果卡 / 警告条
 6. **隐私注**：盾牌图标 +「图片仅临时解析，不长期保存」
 
-截图时可用顶栏 Tab 隐藏或裁掉；产品上线不保留该 chrome。
+截图时可用原型顶栏 Tab 隐藏或裁掉；产品页面不保留那套原型 chrome。线上页面在 `<head>` 加载共享顶栏 `/shell/topbar.js`。顶栏固定在视口顶部，高度是 `--rf-h`（没有顶栏时按 0）。页面没有自己的 fixed 或 sticky 元素；`body` 用 `padding-top: var(--rf-h, 0px)` 留出位置，上传屏高度为 `calc(100dvh - var(--rf-h, 0px))`。
 
 ---
 

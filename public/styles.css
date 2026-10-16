@@ -34,6 +34,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100dvh;
+  /* The shared bar is fixed and sets --rf-h. Reserve that height when present. */
+  padding-top: var(--rf-h, 0px);
   color: var(--text);
   font-size: 15px;
   line-height: 1.5;
@@ -124,7 +126,7 @@ textarea:focus-visible {
 .upload-screen {
   display: grid;
   place-items: center;
-  min-height: 100dvh;
+  min-height: calc(100dvh - var(--rf-h, 0px));
   padding: max(48px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
     max(32px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
