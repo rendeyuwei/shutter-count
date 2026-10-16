@@ -1,0 +1,32 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run format:check
+      - name: Record the revision before building
+        run: printf '%s\n' "$GITHUB_SHA" > REVISION
+      - run: npm test
+      - run: npm run test:browser
+      - run: npm run test:production
+      - run: npm audit --omit=dev --audit-level=high
+      - run: bash -n scripts/deploy-release.sh
+      - run: node --check dist/trusted/receive-deploy.mjs && node --check dist/trusted/deploy-ssh.mjs && node --check dist/trusted/deploy-guard.mjs
