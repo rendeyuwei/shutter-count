@@ -347,6 +347,40 @@ export function createView(viewActions: {
     introEl.focus();
   }
 
+  function buildMissingShutterHelp() {
+    const section = document.createElement("section");
+    section.className = "missing-shutter-help";
+
+    const cause = document.createElement("p");
+    cause.textContent =
+      "未找到快门次数信息。相机或该文件可能不提供此信息，也可能在编辑、导出或分享时丢失。";
+    const steps = document.createElement("p");
+    steps.textContent =
+      "如果使用 iPhone，请在“照片”中选中照片，点击分享，选择“导出未修改的原片”，保存后再上传。";
+    const limit = document.createElement("p");
+    limit.textContent =
+      "原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。";
+
+    const link = document.createElement("a");
+    link.className = "missing-shutter-help__zoom";
+    link.setAttribute("href", "./iphone-export-original.jpg");
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+
+    const image = document.createElement("img");
+    image.className = "missing-shutter-help__image";
+    image.setAttribute("src", "./iphone-export-original.jpg");
+    image.setAttribute("width", "1158");
+    image.setAttribute("height", "374");
+    image.setAttribute(
+      "alt",
+      "iPhone 照片分享菜单，红圈标出“导出未修改的原片”"
+    );
+    link.append(image);
+    section.append(cause, steps, limit, link);
+    return section;
+  }
+
   function renderFail(
     data: Partial<MetadataView>,
     diagnostics = makeDiagnostics({ status: "no_shutter_field" })
@@ -358,7 +392,8 @@ export function createView(viewActions: {
       buildWarnBanner(
         "未能读到快门次数",
         "该型号原图可能不含快门信息，或请换一张相机直出的原图再试。"
-      )
+      ),
+      buildMissingShutterHelp()
     );
 
     const rows: ResultRow[] = [];

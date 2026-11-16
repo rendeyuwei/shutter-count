@@ -762,6 +762,47 @@ test("retry during the minimum loading delay cannot restore old diagnostics", as
   assert.match(ui.stage.textContent, /点击或拖放/);
 });
 
+test("no_shutter_field shows export help and other states remove it", async () => {
+  const help = "未找到快门次数信息";
+  const steps = "导出未修改的原片";
+  const limit = "仍取决于相机是否记录了可读取的快门次数";
+  const missing = createHarness({
+    fetch: () =>
+      response({ data: { status: "no_shutter_field", requestId: ID_A } }),
+  });
+  await missing.upload();
+  assert.match(missing.stage.textContent, new RegExp(help));
+  assert.match(missing.stage.textContent, new RegExp(steps));
+  assert.match(missing.stage.textContent, new RegExp(limit));
+  const image = missing.byClass("missing-shutter-help__image")[0];
+  const zoom = missing.byClass("missing-shutter-help__zoom")[0];
+  assert.equal(image?.tagName, "img");
+  assert.equal(image?.attributes.src, "./iphone-export-original.jpg");
+  assert.equal(image?.attributes.width, "1158");
+  assert.equal(image?.attributes.height, "374");
+  assert.match(image?.attributes.alt ?? "", /导出未修改的原片/);
+  assert.equal(zoom?.tagName, "a");
+  assert.equal(zoom?.attributes.href, "./iphone-export-original.jpg");
+  assert.equal(zoom?.attributes.target, "_blank");
+  missing.actions.resetAndPick();
+  assert.doesNotMatch(missing.stage.textContent, new RegExp(help));
+  assert.equal(missing.byClass("missing-shutter-help").length, 0);
+
+  const success = createHarness({
+    fetch: () => response({ data: { status: "ok", shutterCount: 526 } }),
+  });
+  await success.upload();
+  assert.match(success.stage.textContent, /526/);
+  assert.doesNotMatch(success.stage.textContent, new RegExp(help));
+
+  const rejected = createHarness({
+    fetch: () => response({ data: { status: "unsupported_or_corrupt" } }),
+  });
+  await rejected.upload({ name: "notes.png", size: 100 });
+  assert.doesNotMatch(rejected.stage.textContent, new RegExp(help));
+  assert.equal(rejected.byClass("missing-shutter-help").length, 0);
+});
+
 test("failed settings retrieval can be retried and effective limits replace defaults", async () => {
   let checks = 0;
   const ui = createHarness({

@@ -349,6 +349,32 @@ textarea:focus-visible {
   color: var(--danger);
 }
 
+.missing-shutter-help {
+  margin: 0 0 20px;
+  text-align: left;
+}
+
+.missing-shutter-help p {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.missing-shutter-help__zoom {
+  display: block;
+  max-width: 100%;
+  margin-top: 12px;
+}
+
+.missing-shutter-help__image {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+
 .warn-banner strong {
   display: block;
   margin-bottom: 4px;

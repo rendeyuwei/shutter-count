@@ -73,6 +73,12 @@
 - 软警告条（danger 浅底 + 边框）：
   - 标题：`未能读到快门次数`
   - 正文：`该型号原图可能不含快门信息，或请换一张相机直出的原图再试。`
+- 图文帮助只出现在这一状态。换文件、成功、其他错误或回到上传页时，舞台整体替换，帮助不保留。
+  - `未找到快门次数信息。相机或该文件可能不提供此信息，也可能在编辑、导出或分享时丢失。`
+  - `如果使用 iPhone，请在“照片”中选中照片，点击分享，选择“导出未修改的原片”，保存后再上传。`
+  - `原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。`
+  - 配图可点击，在新页面打开大图。图中只保留「用作墙纸」和红圈标出的「导出未修改的原片」。
+- English: this state adds help explaining that the count may be absent or lost during edit, export, or share, plus iPhone steps to export the unmodified original. The original still may not contain a readable shutter count. The help is removed whenever the stage changes.
 - 结果卡：有则展示 **机身型号**、**拍摄时间**（无快门行；示例 Sony ILCE-7M4）
 - 次按钮（secondary）：`重新上传`
 
