@@ -70,9 +70,14 @@
 
 - Intro：`已解析元数据，但未能读到快门计数。`
 - 文件 chip：仍显示文件名
-- 软警告条（danger 浅底 + 边框）：
-  - 标题：`未能读到快门次数`
-  - 正文：`该型号原图可能不含快门信息，或请换一张相机直出的原图再试。`
+- 一块失败帮助卡，只出现在这一状态。换文件、成功、其他错误或回到上传页时，舞台整体替换，帮助不保留。页面不展示请求 ID、状态码、原因或复制诊断。
+  - 标题：`未能读取快门次数`
+  - 两类原因：相机或该文件可能不提供；也可能在编辑、导出或分享时丢失。
+  - 小标题：`iPhone 用户可尝试`
+  - 步骤：在照片中选中、点击分享、选择「导出未修改的原片」、保存后重新上传。
+  - 限定：原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。
+  - 完整截图按比例缩放，卡内有「查看大图」，点击后在新页面打开原图。
+- English: this state is one help card. It names the two possible causes, lists the iPhone export steps, and says an original may still lack a readable count. The screenshot is complete and opens full size. The page does not show request IDs or diagnostic text.
 - 结果卡：有则展示 **机身型号**、**拍摄时间**（无快门行；示例 Sony ILCE-7M4）
 - 次按钮（secondary）：`重新上传`
 

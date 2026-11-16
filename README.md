@@ -190,11 +190,7 @@ Unknown brands use a generic fallback for a group-qualified `ShutterCount` tag. 
 
 ## Diagnostics and troubleshooting
 
-### Copy a failure report
-
-When no shutter count can be read or an error occurs, use **复制诊断信息** (“Copy diagnostics”) in the result view. The copied report contains the request ID when available, status, reason, and browser time in UTC. If automatic copying is unavailable, the read-only report can be selected and copied manually. It excludes photos, filenames, camera model/serial number, GPS, and EXIF values.
-
-Browser-side validation does not send an upload and has no server request ID. A network failure or browser timeout may also leave the browser without an ID; the report explicitly marks it as unavailable rather than inventing one. A missing ID after a network failure does not prove the server never received the upload.
+The page tells the user what failed and, when the file has no shutter field, how an iPhone export of the unmodified original can be tried. It does not show request IDs, status codes, reasons, or a copy-diagnostics control.
 
 ### Find the matching server event
 

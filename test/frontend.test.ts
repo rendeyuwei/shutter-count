@@ -148,12 +148,10 @@ const INITIAL_TIME = Date.parse("2026-10-10T00:00:00.000Z");
 // rendering, event handlers, async fetches, selection, and detached DOM nodes.
 function createHarness({
   fetch,
-  clipboard,
   settings,
 }: {
   fetch?: FakeFetch;
   settings?: () => FakeResponse | Promise<FakeResponse>;
-  clipboard?: { writeText: (text: string) => Promise<unknown> };
 } = {}) {
   const document = { activeElement: null } as FakeDocument;
   document.root = new HarnessElement("body", "", document);
@@ -196,7 +194,7 @@ function createHarness({
     document,
     window: { addEventListener() {} },
     location: { search: "", hash: "" },
-    navigator: clipboard ? { clipboard } : {},
+    navigator: {},
     URLSearchParams,
     AbortController,
     AbortSignal,
@@ -240,9 +238,6 @@ function createHarness({
   };
   const byClass = (className: string) =>
     all((node) => node.className.split(" ").includes(className));
-  const report = () => byClass("feedback-panel__report")[0];
-  const copyButton = () => byClass("feedback-panel__actions")[0]?.children[0];
-  const copyStatus = () => byClass("feedback-panel__copy-status")[0];
   const flush = async () => {
     for (let i = 0; i < 40; i++) await Promise.resolve();
   };
@@ -264,9 +259,6 @@ function createHarness({
     timers,
     all,
     byClass,
-    report,
-    copyButton,
-    copyStatus,
     advance,
     flush,
     finish,
@@ -328,43 +320,32 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-test("no_shutter_field exposes a readonly allowlisted report, excluding file and EXIF", async () => {
-  const data = {
-    requestId: ID_A,
-    status: "no_shutter_field",
-    fileName: "PRIVATE_filename.jpg",
-    make: "PRIVATE_make",
-    model: "PRIVATE_model",
-    serial: "PRIVATE_serial",
-    GPS: "PRIVATE_GPS",
-    capturedAt: "PRIVATE_capture_time",
-    metadata: "PRIVATE_metadata",
-    message: "PRIVATE_message<script>alert(1)</script>",
-    reason: "PRIVATE_reason<script>alert(1)</script>",
-  };
-  const ui = createHarness({ fetch: () => response({ data }) });
+test("no_shutter_field hides private response fields and internal diagnostics", async () => {
+  const ui = createHarness({
+    fetch: () =>
+      response({
+        data: {
+          requestId: ID_A,
+          status: "no_shutter_field",
+          fileName: "camera.jpg",
+          model: "NIKON Z 30",
+          serial: "PRIVATE_serial",
+          GPS: "PRIVATE_GPS",
+          message: "PRIVATE_message",
+          reason: "PRIVATE_reason",
+        },
+      }),
+  });
   await ui.upload();
-  assert.equal(ui.report()!.readOnly, true);
-  assert.match(
-    ui.report()!.value,
-    new RegExp(
-      `^requestId: ${ID_A}\\nstatus: no_shutter_field\\nreason: unknown\\n`
-    )
-  );
-  assert.match(
-    ui.report()!.value,
-    /发生时间（客户端 UTC）: 2026-10-10T00:00:00\.000Z$/
-  );
-  assert.equal(ui.report()!.value.split("\n").length, 4);
+  assert.match(ui.stage.textContent, /未能读取快门次数/);
+  assert.match(ui.stage.textContent, /NIKON Z 30/);
   assert.doesNotMatch(
-    ui.report()!.value,
-    /PRIVATE|script|filename|model|serial|GPS|capture/i
+    ui.stage.textContent,
+    /PRIVATE|requestId|反馈这个问题|复制诊断信息|status:|reason:/
   );
-  assert.match(ui.stage.textContent, /反馈这个问题/);
-  assert.match(ui.stage.textContent, /不含文件名、照片或 EXIF/);
 });
 
-test("successful recognition keeps the existing result with no feedback panel", async () => {
+test("successful recognition shows the count without the missing-count help", async () => {
   const ui = createHarness({
     fetch: () =>
       response({
@@ -377,8 +358,11 @@ test("successful recognition keeps the existing result with no feedback panel", 
       }),
   });
   await ui.upload();
-  assert.equal(ui.report(), undefined);
   assert.match(ui.stage.textContent, /12,345/);
+  assert.doesNotMatch(
+    ui.stage.textContent,
+    /未能读取快门次数|查看大图|反馈这个问题/
+  );
 });
 
 test("invalid successful counts show an invalid-response report instead of a result", async (t) => {
@@ -404,13 +388,12 @@ test("invalid successful counts show an invalid-response report instead of a res
           }),
       });
       await ui.upload();
-      assert.match(ui.report()!.value, new RegExp(ID_A));
-      assert.match(
-        ui.report()!.value,
-        /status: unexpected_response\nreason: invalid_response/
-      );
-      assert.doesNotMatch(ui.stage.textContent, /NaN|快门读取结果/);
+      assert.match(ui.stage.textContent, /解析失败/);
       assert.match(ui.stage.textContent, /重新上传/);
+      assert.doesNotMatch(
+        ui.stage.textContent,
+        /NaN|快门读取结果|requestId|反馈这个问题/
+      );
     });
   }
 });
@@ -429,21 +412,21 @@ test("unexpected metadata types show an invalid-response report without exposing
       }),
   });
   await ui.upload();
-  assert.match(
-    ui.report()!.value,
-    /unexpected_response\nreason: invalid_response/
+  assert.match(ui.stage.textContent, /解析失败/);
+  assert.doesNotMatch(
+    ui.stage.textContent,
+    /PRIVATE|\[object Object\]|requestId|反馈这个问题/
   );
-  assert.doesNotMatch(ui.stage.textContent, /PRIVATE|\[object Object\]/);
 });
 
-test("all server error states show a report and retry action", async (t) => {
-  for (const [status, apiStatus, reason] of [
-    [400, "bad_request", undefined],
-    [413, "file_too_large", undefined],
-    [422, "unsupported_or_corrupt", "corrupt"],
-    [429, "rate_limited", undefined],
-    [500, "error", "parser_unavailable"],
-    [504, "error", "timeout"],
+test("server error states keep a user message and hide diagnostics", async (t) => {
+  for (const [status, apiStatus, reason, visible] of [
+    [400, "bad_request", undefined, "解析失败"],
+    [413, "file_too_large", undefined, "文件过大"],
+    [422, "unsupported_or_corrupt", "corrupt", "无法解析该文件"],
+    [429, "rate_limited", undefined, "请求过于频繁"],
+    [500, "error", "parser_unavailable", "解析失败"],
+    [504, "error", "timeout", "解析失败"],
   ] as const) {
     await t.test(apiStatus + status, async () => {
       const ui = createHarness({
@@ -454,125 +437,73 @@ test("all server error states show a report and retry action", async (t) => {
           }),
       });
       await ui.upload();
-      assert.match(ui.report()!.value, new RegExp(`status: ${apiStatus}\\n`));
-      assert.match(
-        ui.report()!.value,
-        new RegExp(`reason: ${reason || "not_provided"}\\n`)
-      );
+      assert.match(ui.stage.textContent, new RegExp(visible));
       assert.match(ui.stage.textContent, /重新上传/);
+      assert.doesNotMatch(
+        ui.stage.textContent,
+        new RegExp(`${ID_A}|反馈这个问题|复制诊断信息|status:|reason:`)
+      );
     });
   }
 });
 
-test("non-JSON errors preserve the X-Request-ID fallback without exposing the body", async () => {
-  const ui = createHarness({
+test("bad responses show a user error and hide private payloads", async () => {
+  const html = createHarness({
     fetch: () => response({ status: 502, invalidJson: true, headerId: ID_B }),
   });
-  await ui.upload();
-  assert.match(ui.report()!.value, new RegExp(`requestId: ${ID_B}\\n`));
-  assert.match(ui.report()!.value, /status: error\nreason: invalid_response\n/);
-  assert.doesNotMatch(ui.report()!.value, /PRIVATE/);
-});
+  await html.upload();
+  assert.match(html.stage.textContent, /解析失败/);
+  assert.doesNotMatch(
+    html.stage.textContent,
+    new RegExp(`${ID_B}|PRIVATE|反馈这个问题`)
+  );
 
-test("invalid or missing JSON IDs use only a valid UUID response header", async (t) => {
-  for (const requestId of [
-    undefined,
-    "PRIVATE_ID\nGPS: coordinates",
-    ID_A + "extra",
-    ID_A + "\n",
-    123,
-    {},
-  ]) {
-    await t.test(String(requestId), async () => {
-      const ui = createHarness({
-        fetch: () =>
-          response({
-            data: { status: "no_shutter_field", requestId },
-            headerId: ID_B,
-          }),
-      });
-      await ui.upload();
-      assert.match(ui.report()!.value, new RegExp(`requestId: ${ID_B}\\n`));
-      assert.doesNotMatch(ui.report()!.value, /PRIVATE|coordinates|extra/);
-    });
-  }
-});
-
-test("valid JSON request ID is preferred over the fallback header", async () => {
-  const ui = createHarness({
-    fetch: () =>
-      response({
-        data: { status: "no_shutter_field", requestId: ID_A },
-        headerId: ID_B,
-      }),
-  });
-  await ui.upload();
-  assert.match(ui.report()!.value, new RegExp(ID_A));
-  assert.doesNotMatch(ui.report()!.value, new RegExp(ID_B));
-});
-
-test("missing IDs and unrecognized codes are bounded, explicit, and never invented", async (t) => {
-  for (const data of [
-    null,
-    {},
-    { requestId: "PRIVATE", status: "PRIVATE", reason: "PRIVATE" },
-  ]) {
-    await t.test(JSON.stringify(data), async () => {
-      const ui = createHarness({
-        fetch: () => response({ data, headerId: "PRIVATE_header" }),
-      });
-      await ui.upload();
-      assert.match(
-        ui.report()!.value,
-        /^requestId: 无服务器诊断 ID\nstatus: unexpected_response\n/
-      );
-      assert.match(ui.stage.textContent, /服务器响应未提供有效的诊断 ID/);
-      assert.doesNotMatch(ui.report()!.value, /PRIVATE/);
-    });
-  }
-});
-
-test("non-JSON response with no ID still offers manual diagnostics", async () => {
-  const ui = createHarness({
+  const empty = createHarness({
     fetch: () => response({ status: 500, invalidJson: true }),
   });
-  await ui.upload();
-  assert.match(ui.report()!.value, /requestId: 无服务器诊断 ID\n/);
-  assert.match(ui.report()!.value, /reason: invalid_response/);
+  await empty.upload();
+  assert.match(empty.stage.textContent, /解析失败/);
+  assert.doesNotMatch(empty.stage.textContent, /requestId|reason:/);
+
+  const unknown = createHarness({
+    fetch: () =>
+      response({
+        data: { requestId: "PRIVATE", status: "PRIVATE", reason: "PRIVATE" },
+        headerId: "PRIVATE_header",
+      }),
+  });
+  await unknown.upload();
+  assert.match(unknown.stage.textContent, /解析失败/);
+  assert.doesNotMatch(unknown.stage.textContent, /PRIVATE|反馈这个问题/);
 });
 
-test("local validation reports no server ID and never uploads the file", async (t) => {
-  for (const [file, reason] of [
-    [{ name: "PRIVATE.png", size: 100 }, "not_jpeg"],
-    [{ name: "PRIVATE.jpg", size: 50 * 1024 * 1024 + 1 }, "file_too_large"],
+test("local validation explains the problem and never uploads the file", async (t) => {
+  for (const [file, visible] of [
+    [{ name: "notes.png", size: 100 }, "无法解析该文件"],
+    [{ name: "large.jpg", size: 50 * 1024 * 1024 + 1 }, "文件过大"],
   ] as const) {
-    await t.test(reason, async () => {
+    await t.test(visible, async () => {
       const ui = createHarness();
       await ui.upload(file);
       assert.equal(ui.calls.length, 0);
-      assert.match(ui.stage.textContent, /尚未上传，因此没有服务器诊断 ID/);
-      assert.match(
-        ui.report()!.value,
-        new RegExp(`status: client_validation_failed\\nreason: ${reason}\\n`)
+      assert.match(ui.stage.textContent, new RegExp(visible));
+      assert.doesNotMatch(
+        ui.stage.textContent,
+        /反馈这个问题|requestId|status:/
       );
-      assert.doesNotMatch(ui.report()!.value, /PRIVATE/);
     });
   }
 });
 
-test("network failure has no server ID and excludes exception details", async () => {
+test("network failure shows the retry message and hides the exception", async () => {
   const ui = createHarness({
     fetch: () => {
       throw new Error("PRIVATE_network_message");
     },
   });
   await ui.upload();
-  assert.match(
-    ui.report()!.value,
-    /status: network_error\nreason: network_error\n/
-  );
-  assert.match(ui.stage.textContent, /未收到服务器响应，因此没有服务器诊断 ID/);
-  assert.doesNotMatch(ui.report()!.value, /PRIVATE/);
+  assert.match(ui.stage.textContent, /解析失败/);
+  assert.doesNotMatch(ui.stage.textContent, /PRIVATE|requestId|反馈这个问题/);
 });
 
 test("client timeout reports no server ID without fabricating a correlatable request", async () => {
@@ -590,11 +521,8 @@ test("client timeout reports no server ID without fabricating a correlatable req
   await ui.flush();
   ui.advance(60_000);
   await pending;
-  assert.match(
-    ui.report()!.value,
-    /^requestId: 无服务器诊断 ID\nstatus: client_timeout\nreason: timeout\n/
-  );
-  assert.match(ui.stage.textContent, /未收到服务器响应/);
+  assert.match(ui.stage.textContent, /解析失败/);
+  assert.doesNotMatch(ui.stage.textContent, /PRIVATE|requestId|反馈这个问题/);
   assert.equal(ui.timers.size, 0);
 });
 
@@ -616,106 +544,18 @@ test("timeout while reading the response body preserves the already received ID"
   await ui.flush();
   ui.advance(60_000);
   await pending;
-  assert.match(ui.report()!.value, new RegExp(`requestId: ${ID_A}\\n`));
-  assert.match(ui.report()!.value, /reason: timeout\n/);
-  assert.doesNotMatch(ui.stage.textContent, /未收到服务器响应/);
+  assert.match(ui.stage.textContent, /解析失败/);
+  assert.doesNotMatch(ui.stage.textContent, /PRIVATE|requestId|反馈这个问题/);
 });
 
-test("copy diagnostics writes exactly the safe report and announces success", async () => {
-  const copied: string[] = [];
-  const ui = createHarness({
-    fetch: () =>
-      response({ data: { requestId: ID_A, status: "no_shutter_field" } }),
-    clipboard: { writeText: async (text) => copied.push(text) },
-  });
-  await ui.upload();
-  await ui.copyButton()!.click();
-  assert.deepEqual(copied, [ui.report()!.value]);
-  assert.equal(ui.copyButton()!.textContent, "已复制");
-  assert.equal(ui.copyButton()!.disabled, false);
-  assert.match(ui.copyStatus()!.textContent, /请粘贴/);
-});
-
-test("denied or missing clipboard access selects the readonly report for manual copying", async (t) => {
-  for (const clipboard of [
-    undefined,
-    {
-      writeText: async () => {
-        throw new Error("denied");
-      },
-    },
-  ]) {
-    await t.test(clipboard ? "denied" : "unavailable", async () => {
-      const ui = createHarness({
-        fetch: () =>
-          response({ data: { status: "no_shutter_field", requestId: ID_A } }),
-        clipboard,
-      });
-      await ui.upload();
-      await ui.copyButton()!.click();
-      assert.equal(ui.document.activeElement, ui.report());
-      assert.equal(ui.report()!.selectionStart, 0);
-      assert.equal(ui.report()!.selectionEnd, ui.report()!.value.length);
-      assert.equal(ui.copyButton()!.disabled, false);
-      assert.match(ui.copyStatus()!.textContent, /已选中内容，请手动复制/);
-    });
-  }
-});
-
-test("a late clipboard failure cannot steal focus from a new upload", async () => {
-  const copy = deferred();
-  const ui = createHarness({
-    fetch: () =>
-      response({ data: { status: "no_shutter_field", requestId: ID_A } }),
-    clipboard: { writeText: () => copy.promise },
-  });
-  await ui.upload();
-  const oldReport = ui.report();
-  const copying = ui.copyButton()!.click();
-  ui.actions.resetAndPick();
-  assert.equal(oldReport!.isConnected, false);
-  copy.reject(new Error("denied late"));
-  await copying;
-  assert.notEqual(ui.document.activeElement, oldReport);
-  assert.equal(ui.report(), undefined);
-  assert.match(ui.stage.textContent, /点击或拖放/);
-});
-
-test("pending copy is not issued twice and does not update a detached panel", async () => {
-  const copy = deferred();
-  const copied: string[] = [];
-  const ui = createHarness({
-    fetch: () =>
-      response({ data: { status: "no_shutter_field", requestId: ID_A } }),
-    clipboard: {
-      writeText: (text) => {
-        copied.push(text);
-        return copy.promise;
-      },
-    },
-  });
-  await ui.upload();
-  const button = ui.copyButton()!;
-  const pending = button.click();
-  await button.click();
-  assert.equal(copied.length, 1);
-  await ui.upload({ name: "new.png", size: 100 });
-  copy.resolve(undefined);
-  await pending;
-  assert.equal(ui.copyButton()!.textContent, "复制诊断信息");
-  assert.match(ui.report()!.value, /reason: not_jpeg/);
-});
-
-test("new upload aborts the old one and late old data cannot overwrite its report", async () => {
+test("new upload aborts the old one and late old data cannot overwrite the result", async () => {
   const first = deferred<FakeResponse>();
   let fetchCount = 0;
   const ui = createHarness({
     fetch: () =>
       ++fetchCount === 1
         ? first.promise
-        : response({
-            data: { status: "no_shutter_field", requestId: ID_B },
-          }),
+        : response({ data: { status: "no_shutter_field" } }),
   });
   const oldUpload = ui.actions.handleFile({ name: "first.jpg", size: 100 });
   await ui.flush();
@@ -723,12 +563,10 @@ test("new upload aborts the old one and late old data cannot overwrite its repor
   await ui.flush();
   assert.equal(ui.calls[0]![1].signal.aborted, true);
   await ui.finish(newUpload);
-  first.resolve(
-    response({ data: { status: "no_shutter_field", requestId: ID_A } })
-  );
+  first.resolve(response({ data: { status: "ok", shutterCount: 111 } }));
   await oldUpload;
-  assert.match(ui.report()!.value, new RegExp(ID_B));
-  assert.doesNotMatch(ui.report()!.value, new RegExp(ID_A));
+  assert.match(ui.stage.textContent, /未能读取快门次数/);
+  assert.doesNotMatch(ui.stage.textContent, /111/);
 });
 
 test("locally rejected new file wins over an older pending upload", async () => {
@@ -740,8 +578,8 @@ test("locally rejected new file wins over an older pending upload", async () => 
     response({ data: { status: "no_shutter_field", requestId: ID_A } })
   );
   await oldUpload;
-  assert.match(ui.report()!.value, /status: client_validation_failed/);
-  assert.doesNotMatch(ui.report()!.value, new RegExp(ID_A));
+  assert.match(ui.stage.textContent, /无法解析该文件/);
+  assert.doesNotMatch(ui.stage.textContent, /未能读取快门次数/);
 });
 
 test("retry during the minimum loading delay cannot restore old diagnostics", async () => {
@@ -758,8 +596,50 @@ test("retry during the minimum loading delay cannot restore old diagnostics", as
   assert.equal(ui.fileInput.clickCount, 1);
   ui.advance(400);
   await pending;
-  assert.equal(ui.report(), undefined);
+  assert.doesNotMatch(ui.stage.textContent, /未能读取快门次数/);
   assert.match(ui.stage.textContent, /点击或拖放/);
+});
+
+test("no_shutter_field shows the full guide and other states remove it", async () => {
+  const title = "未能读取快门次数";
+  const missing = createHarness({
+    fetch: () => response({ data: { status: "no_shutter_field" } }),
+  });
+  await missing.upload();
+  assert.match(missing.stage.textContent, new RegExp(title));
+  assert.match(missing.stage.textContent, /iPhone 用户可尝试/);
+  assert.match(missing.stage.textContent, /在照片中选中/);
+  assert.match(missing.stage.textContent, /点击分享/);
+  assert.match(missing.stage.textContent, /导出未修改的原片/);
+  assert.match(missing.stage.textContent, /保存后重新上传/);
+  assert.match(missing.stage.textContent, /原片也不保证一定能查到/);
+  assert.match(missing.stage.textContent, /查看大图/);
+  const image = missing.byClass("missing-shutter__image")[0];
+  const zoom = missing.byClass("missing-shutter__zoom")[0];
+  assert.equal(image?.tagName, "img");
+  assert.equal(image?.attributes.src, "./iphone-export-original.jpg");
+  assert.equal(image?.attributes.width, "1206");
+  assert.equal(image?.attributes.height, "1550");
+  assert.equal(zoom?.tagName, "a");
+  assert.equal(zoom?.attributes.href, "./iphone-export-original.jpg");
+  assert.equal(zoom?.attributes.target, "_blank");
+  assert.equal(zoom?.textContent.includes("查看大图"), true);
+  missing.actions.resetAndPick();
+  assert.doesNotMatch(missing.stage.textContent, new RegExp(title));
+  assert.equal(missing.byClass("missing-shutter").length, 0);
+
+  const success = createHarness({
+    fetch: () => response({ data: { status: "ok", shutterCount: 526 } }),
+  });
+  await success.upload();
+  assert.match(success.stage.textContent, /526/);
+  assert.doesNotMatch(success.stage.textContent, new RegExp(title));
+
+  const rejected = createHarness({});
+  await rejected.upload({ name: "notes.png", size: 100 });
+  assert.match(rejected.stage.textContent, /无法解析该文件/);
+  assert.doesNotMatch(rejected.stage.textContent, new RegExp(title));
+  assert.equal(rejected.byClass("missing-shutter").length, 0);
 });
 
 test("failed settings retrieval can be retried and effective limits replace defaults", async () => {
@@ -772,11 +652,11 @@ test("failed settings retrieval can be retried and effective limits replace defa
     fetch: () => response({ data: { status: "ok", shutterCount: 526 } }),
   });
   await ui.upload();
-  assert.match(ui.report()!.value, /network_error/);
+  assert.match(ui.stage.textContent, /解析失败/);
   assert.equal(ui.calls.length, 0);
   await ui.upload({ name: "large.jpg", size: 1048577 });
   assert.match(ui.stage.textContent, /1 MB/);
-  assert.match(ui.report()!.value, /client_validation_failed/);
+  assert.match(ui.stage.textContent, /文件过大/);
   assert.equal(ui.calls.length, 0);
   await ui.upload();
   assert.match(ui.stage.textContent, /526/);

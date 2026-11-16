@@ -1,10 +1,8 @@
-import { makeDiagnostics } from "./diagnostics.js";
 import type {
   ErrorKind,
   MetadataView,
   SuccessView,
   ResultRow,
-  Diagnostics,
 } from "./types.js";
 function requiredElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -236,77 +234,6 @@ export function createView(viewActions: {
     return actions;
   }
 
-  function buildFeedbackPanel(
-    diagnostics: Diagnostics,
-    noIdExplanation?: string | null
-  ) {
-    const panel = document.createElement("section");
-    panel.className = "feedback-panel";
-    panel.setAttribute("aria-label", "问题反馈与诊断信息");
-
-    const title = document.createElement("h2");
-    title.textContent = "反馈这个问题";
-    const description = document.createElement("p");
-    description.textContent = diagnostics.requestId
-      ? "复制诊断信息发给站点维护者，便于定位本次问题。"
-      : noIdExplanation ||
-        "服务器响应未提供有效的诊断 ID，仍可复制以下信息反馈。";
-
-    const report = document.createElement("textarea");
-    report.className = "feedback-panel__report";
-    report.readOnly = true;
-    report.rows = 6;
-    report.spellcheck = false;
-    report.setAttribute("aria-label", "诊断信息（可选择复制）");
-    report.value = [
-      `requestId: ${diagnostics.requestId || "无服务器诊断 ID"}`,
-      `status: ${diagnostics.status}`,
-      `reason: ${diagnostics.reason}`,
-      `发生时间（客户端 UTC）: ${diagnostics.clientOccurredAt}`,
-    ].join("\n");
-
-    const privacy = document.createElement("p");
-    privacy.className = "feedback-panel__privacy";
-    privacy.textContent =
-      "仅含诊断 ID、状态、原因和客户端时间，不含文件名、照片或 EXIF。";
-
-    const actions = document.createElement("div");
-    actions.className = "feedback-panel__actions";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button button--secondary";
-    button.textContent = "复制诊断信息";
-    const copyStatus = document.createElement("span");
-    copyStatus.className = "feedback-panel__copy-status";
-    copyStatus.setAttribute("role", "status");
-    copyStatus.setAttribute("aria-live", "polite");
-
-    button.addEventListener("click", async () => {
-      if (button.disabled) return;
-      button.disabled = true;
-      try {
-        await navigator.clipboard.writeText(report.value);
-        if (!panel.isConnected) return;
-        button.textContent = "已复制";
-        copyStatus.textContent = "请粘贴到反馈消息中。";
-      } catch {
-        // Clipboard API needs HTTPS and may be denied. Keep a manual copy path,
-        // but never steal focus from a newer upload when an old promise settles.
-        if (!panel.isConnected) return;
-        report.focus();
-        report.select();
-        report.setSelectionRange(0, report.value.length);
-        copyStatus.textContent = "自动复制不可用，已选中内容，请手动复制。";
-      } finally {
-        button.disabled = false;
-      }
-    });
-
-    actions.append(button, copyStatus);
-    panel.append(title, description, report, privacy, actions);
-    return panel;
-  }
-
   /* ------------------------------------------------------------------ */
   /* State renderers                                                     */
   /* ------------------------------------------------------------------ */
@@ -347,42 +274,84 @@ export function createView(viewActions: {
     introEl.focus();
   }
 
-  function renderFail(
-    data: Partial<MetadataView>,
-    diagnostics = makeDiagnostics({ status: "no_shutter_field" })
-  ) {
+  function buildMissingShutterHelp() {
+    const section = document.createElement("section");
+    section.className = "missing-shutter";
+
+    const title = document.createElement("h2");
+    title.textContent = "未能读取快门次数";
+
+    const causes = document.createElement("ul");
+    causes.className = "missing-shutter__causes";
+    for (const text of [
+      "相机或该文件可能不提供此信息。",
+      "也可能在编辑、导出或分享时丢失。",
+    ]) {
+      const item = document.createElement("li");
+      item.textContent = text;
+      causes.append(item);
+    }
+
+    const guideTitle = document.createElement("h3");
+    guideTitle.textContent = "iPhone 用户可尝试";
+    const steps = document.createElement("ol");
+    steps.className = "missing-shutter__steps";
+    for (const text of [
+      "在照片中选中",
+      "点击分享",
+      "选择“导出未修改的原片”",
+      "保存后重新上传",
+    ]) {
+      const item = document.createElement("li");
+      item.textContent = text;
+      steps.append(item);
+    }
+
+    const limit = document.createElement("p");
+    limit.className = "missing-shutter__limit";
+    limit.textContent =
+      "原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。";
+
+    const link = document.createElement("a");
+    link.className = "missing-shutter__zoom";
+    link.setAttribute("href", "./iphone-export-original.jpg");
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+
+    const image = document.createElement("img");
+    image.className = "missing-shutter__image";
+    image.setAttribute("src", "./iphone-export-original.jpg");
+    image.setAttribute("width", "1206");
+    image.setAttribute("height", "1550");
+    image.setAttribute(
+      "alt",
+      "iPhone 分享界面完整截图，红圈标出导出未修改的原片"
+    );
+    const zoom = document.createElement("span");
+    zoom.textContent = "查看大图";
+    link.append(image, zoom);
+    section.append(title, causes, guideTitle, steps, limit, link);
+    return section;
+  }
+
+  function renderFail(data: Partial<MetadataView>) {
     setIntro("已解析元数据，但未能读到快门计数。");
 
     const nodes: Node[] = [buildFileChip(data.fileName || "upload")];
-    nodes.push(
-      buildWarnBanner(
-        "未能读到快门次数",
-        "该型号原图可能不含快门信息，或请换一张相机直出的原图再试。"
-      )
-    );
+    nodes.push(buildMissingShutterHelp());
 
     const rows: ResultRow[] = [];
     if (data.model) rows.push({ label: "机身型号", value: data.model });
     if (data.capturedAt)
       rows.push({ label: "拍摄时间", value: data.capturedAt });
-    if (rows.length > 0) {
-      nodes.push(buildResultCard(rows, "已知元数据"));
-    }
+    if (rows.length > 0) nodes.push(buildResultCard(rows, "已知元数据"));
 
-    nodes.push(
-      buildFeedbackPanel(diagnostics),
-      buildActions("重新上传", "secondary")
-    );
+    nodes.push(buildActions("重新上传", "secondary"));
     setStage(...nodes);
     introEl.focus();
   }
 
-  function renderError(
-    kind: ErrorKind,
-    fileName?: string | null,
-    diagnostics = makeDiagnostics({ status: "error" }),
-    noIdExplanation?: string | null
-  ) {
+  function renderError(kind: ErrorKind, fileName?: string | null) {
     const copy =
       kind === "too_large"
         ? {
@@ -394,9 +363,8 @@ export function createView(viewActions: {
 
     const nodes: Node[] = [];
     if (fileName) nodes.push(buildFileChip(fileName));
-    nodes.push(buildWarnBanner(copy.title, copy.body));
     nodes.push(
-      buildFeedbackPanel(diagnostics, noIdExplanation),
+      buildWarnBanner(copy.title, copy.body),
       buildActions("重新上传", "secondary")
     );
     setStage(...nodes);

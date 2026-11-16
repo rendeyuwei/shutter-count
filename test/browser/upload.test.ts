@@ -7,7 +7,7 @@ import { decodeParseResponse } from "../../shared/protocol.js";
 import type { ParseResponse } from "../../shared/protocol.js";
 
 test(
-  "the compiled page supports uploads and diagnostics with external requests blocked in Chrome",
+  "the compiled page supports uploads and error states with external requests blocked in Chrome",
   { timeout: 60_000 },
   async (t) => {
     const app = buildApp({
@@ -36,15 +36,6 @@ test(
         await route.abort("blockedbyclient");
       }
     });
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, "clipboard", {
-        value: {
-          writeText: async () => {
-            throw new Error("Clipboard denied for this test");
-          },
-        },
-      });
-    });
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -59,7 +50,7 @@ test(
       page
         .locator("#file-input")
         .setInputFiles({ name, mimeType: "image/jpeg", buffer });
-    const report = page.locator(".feedback-panel__report");
+    const stage = page.locator("#stage");
 
     await t.test(
       "camera sample reads 526 and retry resets the picker",
@@ -75,25 +66,26 @@ test(
     );
 
     await t.test(
-      "missing shutter fields offer safe diagnostics and manual copy",
+      "missing shutter fields show the guide without diagnostics",
       async () => {
-        await select(canon, "PRIVATE_filename.jpg");
-        await report.waitFor();
-        assert.match(await report.inputValue(), /status: no_shutter_field/);
+        await select(canon, "camera.jpg");
+        await page.getByRole("heading", { name: "未能读取快门次数" }).waitFor();
+        const text = await stage.innerText();
+        assert.match(text, /iPhone 用户可尝试/);
+        assert.match(text, /查看大图/);
         assert.doesNotMatch(
-          await report.inputValue(),
-          /PRIVATE|Canon|Serial|GPS/
+          text,
+          /反馈这个问题|复制诊断信息|requestId|status:/
         );
-        await page.getByRole("button", { name: "复制诊断信息" }).click();
-        await page
-          .getByText("自动复制不可用，已选中内容，请手动复制。")
-          .waitFor();
-        assert.equal(
-          await report.evaluate(
-            (element) => document.activeElement === element
-          ),
-          true
-        );
+        const image = page.locator(".missing-shutter__image");
+        const box = await image.boundingBox();
+        const natural = await image.evaluate((element) => {
+          const img = element as HTMLImageElement;
+          return { width: img.naturalWidth, height: img.naturalHeight };
+        });
+        assert.equal(natural.width, 1206);
+        assert.equal(natural.height, 1550);
+        assert.ok(box && box.width <= 420);
       }
     );
 
@@ -107,9 +99,9 @@ test(
         };
         page.on("request", listener);
         await select(Buffer.alloc(3 * 1048576));
-        await report.waitFor();
-        assert.match(await page.locator("#stage").innerText(), /2.5 MB/);
-        assert.match(await report.inputValue(), /client_validation_failed/);
+        await page.getByText("文件过大").waitFor();
+        assert.match(await stage.innerText(), /2.5 MB/);
+        assert.doesNotMatch(await stage.innerText(), /反馈这个问题/);
         assert.equal(uploads, 0);
         page.off("request", listener);
       }
@@ -197,19 +189,18 @@ test(
         });
         await select(canon, "replacement.jpg");
         await aborted;
-        await report.waitFor();
-        assert.match(await report.inputValue(), /status: no_shutter_field/);
+        await page.getByRole("heading", { name: "未能读取快门次数" }).waitFor();
         releaseOld();
         await finished;
         assert.equal(await page.locator(".result-row--shutter").count(), 0);
-        assert.match(await report.inputValue(), /status: no_shutter_field/);
+        assert.match(await stage.innerText(), /未能读取快门次数/);
       } finally {
         releaseOld();
         await page.unroute("**/api/parse");
       }
     });
 
-    for (const [name, status, body, expected] of [
+    for (const [name, status, body, visible] of [
       [
         "rate limit",
         429,
@@ -217,9 +208,9 @@ test(
           status: "rate_limited",
           requestId: "3cafc9f3-b919-4ad1-9bc8-3a4dbf55dc34",
         }),
-        "rate_limited",
+        "请求过于频繁",
       ],
-      ["proxy HTML", 502, "<html>PRIVATE</html>", "invalid_response"],
+      ["proxy HTML", 502, "<html>PRIVATE</html>", "解析失败"],
       [
         "malformed success",
         200,
@@ -228,13 +219,13 @@ test(
           shutterCount: "526",
           rawExif: "PRIVATE",
         }),
-        "invalid_response",
+        "解析失败",
       ],
       [
         "busy service",
         503,
         JSON.stringify({ status: "error", reason: "busy" }),
-        "busy",
+        "解析服务繁忙",
       ],
     ] as const) {
       await t.test(name, async () => {
@@ -250,13 +241,13 @@ test(
         );
         await page.goto(url);
         await select(nikon);
-        await report.waitFor();
-        assert.match(await report.inputValue(), new RegExp(expected));
-        assert.match(
-          await report.inputValue(),
-          /3cafc9f3-b919-4ad1-9bc8-3a4dbf55dc34/
+        await page.getByText(visible).waitFor();
+        const text = await stage.innerText();
+        assert.match(text, new RegExp(visible));
+        assert.doesNotMatch(
+          text,
+          /3cafc9f3-b919-4ad1-9bc8-3a4dbf55dc34|PRIVATE|rawExif|反馈这个问题/
         );
-        assert.doesNotMatch(await report.inputValue(), /PRIVATE|rawExif/);
         await page.unroute("**/api/parse");
       });
     }

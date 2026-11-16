@@ -14,13 +14,6 @@ export type ParseOutcome =
   | { kind: "fail"; data: MetadataView }
   | { kind: "error"; error: ErrorKind };
 
-export interface Diagnostics {
-  requestId: string | null;
-  status: string;
-  reason: string;
-  clientOccurredAt: string;
-}
-
 export interface ResultRow {
   label: string;
   value: string;

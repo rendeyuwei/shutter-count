@@ -36,7 +36,7 @@ web/
   app.ts                 浏览器入口、上传状态与请求取消
   api.ts                 配置读取与响应校验
   render.ts              使用 textContent 渲染
-  diagnostics.ts         隐私安全的反馈
+  （页面不展示诊断；服务端日志仍在 src/diagnostics.ts）
 public/                  CSS、图标等静态资源
 test/                    TypeScript 回归测试与 JPEG 样本
 scripts/                 TypeScript 运维工具与 Bash 发布脚本

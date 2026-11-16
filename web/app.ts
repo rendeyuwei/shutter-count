@@ -1,7 +1,6 @@
 import { loadUploadSettings, classifyResponse } from "./api.js";
-import { makeDiagnostics, responseDiagnostics } from "./diagnostics.js";
 import { createView } from "./render.js";
-import type { ParseOutcome, Diagnostics } from "./types.js";
+import type { ParseOutcome } from "./types.js";
 import type { UploadSettings } from "../shared/protocol.js";
 const API_URL = "./api/parse";
 const FETCH_TIMEOUT_MS = 60_000;
@@ -35,15 +34,7 @@ export async function handleFile(file: File) {
   const name = file.name || "upload.jpg";
   if (!/\.jpe?g$/i.test(name)) {
     cancelPendingUpload();
-    renderError(
-      "unsupported",
-      name,
-      makeDiagnostics({
-        status: "client_validation_failed",
-        reason: "not_jpeg",
-      }),
-      "文件在浏览器中未通过校验，尚未上传，因此没有服务器诊断 ID。"
-    );
+    renderError("unsupported", name);
     return;
   }
   cancelPendingUpload();
@@ -52,24 +43,12 @@ export async function handleFile(file: File) {
   if (selection !== uploadGeneration) return;
   if (!settings) {
     cancelPendingUpload();
-    renderError(
-      "network",
-      name,
-      makeDiagnostics({ status: "network_error", reason: "network_error" })
-    );
+    renderError("network", name);
     return;
   }
   if (file.size > settings.maxUploadBytes) {
     cancelPendingUpload();
-    renderError(
-      "too_large",
-      name,
-      makeDiagnostics({
-        status: "client_validation_failed",
-        reason: "file_too_large",
-      }),
-      "文件在浏览器中未通过校验，尚未上传，因此没有服务器诊断 ID。"
-    );
+    renderError("too_large", name);
     return;
   }
   return startParse(file, name);
@@ -89,8 +68,6 @@ async function startParse(file: File, name: string) {
   }, FETCH_TIMEOUT_MS);
 
   let outcome: ParseOutcome;
-  let diagnostics: Diagnostics;
-  let response: Response | null = null;
   try {
     const fd = new FormData();
     fd.append("file", file, name);
@@ -99,46 +76,16 @@ async function startParse(file: File, name: string) {
       body: fd,
       signal: controller.signal,
     });
-    response = res;
     let data: unknown = null;
-    let invalidResponse = false;
     try {
       data = await res.json();
     } catch {
-      // A proxy may return HTML. Recover the server ID from headers, without
-      // copying its body or exception message into the user's report.
-      invalidResponse = true;
+      data = null;
     }
     outcome = classifyResponse(res, data);
-    diagnostics = responseDiagnostics(
-      res,
-      data,
-      invalidResponse ? "invalid_response" : "not_provided"
-    );
-    if (res.ok && outcome.kind === "error") {
-      diagnostics = makeDiagnostics({
-        ...diagnostics,
-        status: "unexpected_response",
-        reason: "invalid_response",
-      });
-    }
-    if (timedOut) {
-      outcome = { kind: "error", error: "network" };
-      diagnostics = responseDiagnostics(res, null, "timeout");
-    }
+    if (timedOut) outcome = { kind: "error", error: "network" };
   } catch {
-    // network failure, CORS, or the 60 s abort
     outcome = { kind: "error", error: "network" };
-    diagnostics = response
-      ? responseDiagnostics(
-          response,
-          null,
-          timedOut ? "timeout" : "network_error"
-        )
-      : makeDiagnostics({
-          status: timedOut ? "client_timeout" : "network_error",
-          reason: timedOut ? "timeout" : "network_error",
-        });
   } finally {
     clearTimeout(timer);
     if (activeController === controller) activeController = null;
@@ -153,16 +100,8 @@ async function startParse(file: File, name: string) {
 
   if (generation !== uploadGeneration) return;
   if (outcome.kind === "success") renderSuccess(outcome.data);
-  else if (outcome.kind === "fail") renderFail(outcome.data, diagnostics);
-  else
-    renderError(
-      outcome.error,
-      name,
-      diagnostics,
-      response
-        ? null
-        : "未收到服务器响应，因此没有服务器诊断 ID。可复制以下信息反馈。"
-    );
+  else if (outcome.kind === "fail") renderFail(outcome.data);
+  else renderError(outcome.error, name);
 }
 
 function cancelPendingUpload() {
