@@ -121,6 +121,39 @@ test("GET /shutter/app.js -> 200 javascript", async () => {
   assert.match(res.body, /api\/parse/);
 });
 
+function jpegSize(body: Buffer) {
+  let offset = 2;
+  while (offset + 8 < body.length && body[offset] === 0xff) {
+    const marker = body[offset + 1] ?? 0;
+    const length = body.readUInt16BE(offset + 2);
+    if (marker >= 0xc0 && marker <= 0xc2) {
+      return {
+        height: body.readUInt16BE(offset + 5),
+        width: body.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + length;
+  }
+  throw new Error("JPEG has no size marker");
+}
+
+test("guide image is the full JPEG under each base path", async () => {
+  for (const basePath of ["/", "/shutter", "/tools/counter"]) {
+    const app = await makeApp({ basePath });
+    const prefix = basePath === "/" ? "" : basePath;
+    const res = await app.inject({
+      method: "GET",
+      url: prefix + "/iphone-export-original.jpg",
+    });
+    assert.equal(res.statusCode, 200, basePath);
+    assert.match(String(res.headers["content-type"]), /image\/jpeg/);
+    const body = Buffer.from(res.rawPayload);
+    assert.equal(body[0], 0xff);
+    assert.equal(body[1], 0xd8);
+    assert.deepEqual(jpegSize(body), { width: 1206, height: 1550 });
+  }
+});
+
 test("GET /shutter/styles.css -> 200 css", async () => {
   const app = await makeApp();
   const res = await app.inject({ method: "GET", url: "/shutter/styles.css" });

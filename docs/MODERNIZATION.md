@@ -36,7 +36,7 @@ web/
   app.ts                 browser entrypoint, upload state and cancellation
   api.ts                 request cancellation and response validation
   render.ts              DOM rendering with textContent
-  diagnostics.ts         privacy-safe feedback
+  (the page does not show diagnostics; server logs stay in src/diagnostics.ts)
 public/                  CSS, favicon and other static assets
 test/                    TypeScript regression tests and JPEG fixtures
 scripts/                 TypeScript operational tools and Bash release script

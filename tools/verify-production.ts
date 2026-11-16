@@ -123,10 +123,35 @@ try {
   const page = await request(base + "/");
   assert.equal(page.status, 200);
   await page.body?.cancel();
-  for (const asset of ["app.js", "styles.css", "favicon.svg"]) {
+  for (const [asset, type] of [
+    ["app.js", /javascript/],
+    ["styles.css", /text\/css/],
+    ["favicon.svg", /svg/],
+    ["iphone-export-original.jpg", /image\/jpeg/],
+  ] as const) {
     const response = await request(base + "/" + asset);
-    assert.equal(response.status, 200);
-    await response.body?.cancel();
+    assert.equal(response.status, 200, asset);
+    assert.match(response.headers.get("content-type") ?? "", type, asset);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (asset.endsWith(".jpg")) {
+      assert.equal(bytes[0], 0xff);
+      assert.equal(bytes[1], 0xd8);
+      let offset = 2;
+      let size: { width: number; height: number } | null = null;
+      while (offset + 8 < bytes.length && bytes[offset] === 0xff) {
+        const marker = bytes[offset + 1] ?? 0;
+        const length = bytes.readUInt16BE(offset + 2);
+        if (marker >= 0xc0 && marker <= 0xc2) {
+          size = {
+            height: bytes.readUInt16BE(offset + 5),
+            width: bytes.readUInt16BE(offset + 7),
+          };
+          break;
+        }
+        offset += 2 + length;
+      }
+      assert.deepEqual(size, { width: 1206, height: 1550 });
+    }
   }
   const config: unknown = await (await request(base + "/api/config")).json();
   assert.ok(isRecord(config));
