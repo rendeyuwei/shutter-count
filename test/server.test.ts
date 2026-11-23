@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildApp, cleanupStaleTmpDirs, parseTrustProxy } from "../src/app.js";
+import { GUIDE } from "../web/guide.js";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -195,20 +196,32 @@ function jpegSize(body: Buffer) {
   throw new Error("JPEG has no size marker");
 }
 
-test("guide image is the full JPEG under each base path", async () => {
+test("guide images keep their decoded JPEG bytes under each base path", async () => {
   for (const basePath of ["/", "/shutter", "/tools/counter"]) {
     const app = await makeApp({ basePath });
     const prefix = basePath === "/" ? "" : basePath;
-    const res = await app.inject({
-      method: "GET",
-      url: prefix + "/iphone-export-original.jpg",
-    });
-    assert.equal(res.statusCode, 200, basePath);
-    assert.match(String(res.headers["content-type"]), /image\/jpeg/);
-    const body = Buffer.from(res.rawPayload);
-    assert.equal(body[0], 0xff);
-    assert.equal(body[1], 0xd8);
-    assert.deepEqual(jpegSize(body), { width: 1206, height: 1550 });
+    for (const spec of [GUIDE.zh, GUIDE.en]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `${prefix}/${spec.file}`,
+      });
+      assert.equal(res.statusCode, 200, `${basePath} ${spec.file}`);
+      assert.match(String(res.headers["content-type"]), /image\/jpeg/);
+      const body = Buffer.from(res.rawPayload);
+      const file = await fsp.readFile(
+        new URL(`../public/${spec.file}`, import.meta.url)
+      );
+      assert.deepEqual(body, file);
+      assert.deepEqual(jpegSize(body), {
+        width: spec.width,
+        height: spec.height,
+      });
+      const nested = await app.inject({
+        method: "GET",
+        url: `${prefix}/en/${spec.file}`,
+      });
+      assert.equal(nested.statusCode, 404, `${basePath} en/${spec.file}`);
+    }
   }
 });
 

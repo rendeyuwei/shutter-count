@@ -1,8 +1,6 @@
 import {
   decideEnter,
-  hrefFor,
   normalizeMount,
-  placeInMount,
   sameMount,
   type LangCode,
 } from "../shared/lang.js";
@@ -107,33 +105,6 @@ export function installEnter(
       if (rf) rf.leaving = true;
     },
   });
-  if (rf) alignContract(rf, mount, location);
-}
-
-/**
- * The shared bar reads place() once, before this page's module runs.
- * On a mount the contract table does not list, that read would treat
- * `{mount}en/` as Chinese and the only switch would point back at English.
- * Repair place() and href() here, while the head script is still running.
- */
-export function alignContract(
-  rf: RfLangContract,
-  mount: string,
-  where: { pathname: string; search: string; hash: string }
-): void {
-  const root = normalizeMount(mount);
-  if (sameMount(rf.place(where.pathname).site.base, root)) return;
-  const contractPlace = rf.place.bind(rf);
-  rf.place = (pathname: string) => {
-    const path = pathname || "/";
-    if (path.startsWith(root) || `${path}/` === root) {
-      const located = placeInMount(path, root);
-      return { site: { base: root }, lang: located.lang, rest: located.rest };
-    }
-    return contractPlace(pathname);
-  };
-  rf.href = (lang) =>
-    hrefFor(lang, where.pathname, root, where.search || "", where.hash || "");
 }
 
 function browserHost(): PrefHost {

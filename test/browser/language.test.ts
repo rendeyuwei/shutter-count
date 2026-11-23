@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { buildApp } from "../../src/app.js";
+import { GUIDE } from "../../web/guide.js";
 
 const nikon = await fs.readFile(
   new URL("../fixtures/NikonD70.jpg", import.meta.url)
@@ -42,6 +43,10 @@ test(
         t.after(() => app.close());
         const origin = await app.listen({ port: 0, host: "127.0.0.1" });
         const page = await open(browser, origin, "zh-CN");
+        let posts = 0;
+        page.on("request", (request) => {
+          if (request.method() === "POST") posts += 1;
+        });
         const root = origin + "/tools/counter/";
         await page.goto(root);
         assert.equal(page.url(), root);
@@ -64,28 +69,50 @@ test(
         await page
           .getByRole("heading", { name: "Shutter count was not found" })
           .waitFor();
+        const stageText = await page.locator("#stage").innerText();
+        assert.match(stageText, /Export Unmodified Original/);
+        assert.match(stageText, /English illustration/);
+        assert.doesNotMatch(
+          stageText,
+          /导出未修改的原片|反馈这个问题|requestId/
+        );
+        await page.evaluate(() => {
+          (window as unknown as { __scStay?: number }).__scStay = 1;
+        });
+        await expectGuide(page, origin, "/tools/counter/", GUIDE.en);
+        await overflow(page);
+        const postsBefore = posts;
+        await page.locator("#lang-switch").click();
+        await page.waitForFunction(
+          () => document.documentElement.lang === "zh-CN"
+        );
+        assert.equal(
+          await page.evaluate(
+            () => (window as unknown as { __scStay?: number }).__scStay
+          ),
+          1
+        );
+        assert.match(page.url(), /\/tools\/counter\/\?lang=zh$/);
         assert.match(
           await page.locator("#stage").innerText(),
-          /Export Unmodified Original/
+          /未能读取快门次数/
         );
-        assert.doesNotMatch(
-          await page.locator("#stage").innerText(),
-          /反馈这个问题|requestId/
+        assert.match(await page.locator("#stage").innerText(), /camera\.jpg/);
+        await expectGuide(page, origin, "/tools/counter/", GUIDE.zh);
+        assert.equal(posts, postsBefore);
+        await page.locator("#lang-switch").click();
+        await page.waitForFunction(
+          () => document.documentElement.lang === "en"
         );
-        const image = page.locator(".missing-shutter__image");
-        const src = await image.getAttribute("src");
-        assert.equal(src, "/tools/counter/iphone-export-original.jpg");
-        const bytes = await page.request.get(origin + src);
-        assert.equal(bytes.status(), 200);
-        const body = Buffer.from(await bytes.body());
-        assert.equal(body[0], 0xff);
-        assert.equal(body[1], 0xd8);
-        const natural = await image.evaluate((element) => {
-          const img = element as HTMLImageElement;
-          return { width: img.naturalWidth, height: img.naturalHeight };
-        });
-        assert.deepEqual(natural, { width: 1206, height: 1550 });
-        await overflow(page);
+        assert.equal(
+          await page.evaluate(
+            () => (window as unknown as { __scStay?: number }).__scStay
+          ),
+          1
+        );
+        assert.match(page.url(), /\/tools\/counter\/en\//);
+        await expectGuide(page, origin, "/tools/counter/", GUIDE.en);
+        assert.equal(posts, postsBefore);
 
         await page.locator("#file-input").setInputFiles({
           name: "camera.jpg",
@@ -96,6 +123,24 @@ test(
         assert.match(await page.locator("#stage").innerText(), /526/);
         assert.equal(await page.locator(".missing-shutter").count(), 0);
         assert.equal(await page.locator("html").getAttribute("lang"), "en");
+        const afterSuccess = posts;
+        await page.locator("#lang-switch").click();
+        await page.waitForFunction(
+          () => document.documentElement.lang === "zh-CN"
+        );
+        assert.equal(
+          await page.evaluate(
+            () => (window as unknown as { __scStay?: number }).__scStay
+          ),
+          1
+        );
+        assert.match(await page.locator("#stage").innerText(), /526/);
+        assert.match(await page.locator("#stage").innerText(), /再查一张/);
+        assert.equal(posts, afterSuccess);
+        await page.locator("#lang-switch").click();
+        await page.waitForFunction(
+          () => document.documentElement.lang === "en"
+        );
         await overflow(page);
         await page.getByRole("button", { name: "Check another" }).click();
         await page
@@ -199,87 +244,66 @@ test(
         await context.close();
       }
     );
-
-    await t.test("custom mount topbar can leave English", async () => {
-      const app = buildApp({
-        port: 0,
-        basePath: "/tools/counter",
-        maxUploadMb: 2.5,
-      });
-      t.after(() => app.close());
-      const origin = await app.listen({ port: 0, host: "127.0.0.1" });
-      const context = await browser.newContext({ locale: "zh-CN" });
-      await blockExternal(context, origin);
-      await context.route("**/shell/topbar.js", (route) =>
-        route.fulfill({
-          contentType: "text/javascript; charset=utf-8",
-          body: TOPBAR_STUB,
-        })
-      );
-      const page = await context.newPage();
-      await page.goto(origin + "/tools/counter/en/?album=1#shot");
-      await page.locator("a.rf-lang").waitFor();
-      assert.equal(
-        await page.locator("html").getAttribute("data-bar-lang"),
-        "en"
-      );
-      assert.equal(
-        await page.locator("#lang-switch").getAttribute("hidden"),
-        ""
-      );
-      assert.equal(
-        await page.locator("a.rf-lang").getAttribute("href"),
-        "/tools/counter/?album=1&lang=zh#shot"
-      );
-      await page.locator("a.rf-lang").click();
-      await page.waitForURL(/\/tools\/counter\/\?album=1&lang=zh#shot$/);
-      await page.waitForTimeout(200);
-      assert.equal(new URL(page.url()).pathname, "/tools/counter/");
-      assert.equal(
-        await page.evaluate(() => localStorage.getItem("rf-lang")),
-        "zh"
-      );
-      assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
-
-      await page.goto(origin + "/tools/counter/?album=1#shot");
-      await page.locator("a.rf-lang").waitFor();
-      assert.equal(
-        await page.locator("html").getAttribute("data-bar-lang"),
-        "zh"
-      );
-      assert.equal(
-        await page.locator("a.rf-lang").getAttribute("href"),
-        "/tools/counter/en/?album=1#shot"
-      );
-      await page.locator("a.rf-lang").click();
-      await page.waitForURL(/\/tools\/counter\/en\/\?album=1#shot$/);
-      await page.waitForTimeout(200);
-      assert.equal(new URL(page.url()).pathname, "/tools/counter/en/");
-      assert.equal(
-        await page.evaluate(() => localStorage.getItem("rf-lang")),
-        "en"
-      );
-      await context.close();
-    });
   }
 );
 
-const TOPBAR_STUB = `(function () {
-  var rf = window.rfLang;
-  if (!rf || !document.body) return;
-  var here = rf.place(location.pathname);
-  var other = here.lang === "en" ? "zh" : "en";
-  var toggle = document.createElement("a");
-  toggle.className = "rf-lang";
-  toggle.textContent = other === "en" ? "EN" : "\\u4e2d\\u6587";
-  toggle.href = rf.href(other);
-  toggle.addEventListener("click", function () {
-    rf.choose(other);
-    toggle.href = rf.href(other);
-  });
-  document.body.insertBefore(toggle, document.body.firstChild);
-  document.documentElement.setAttribute("data-bar-lang", here.lang);
-})();`;
+async function expectGuide(
+  page: Page,
+  origin: string,
+  mount: string,
+  spec: { file: string; width: number; height: number }
+) {
+  const image = page.locator(".missing-shutter__image");
+  const src = await image.getAttribute("src");
+  assert.equal(src, `${mount}${spec.file}`);
+  assert.equal(
+    await page.locator(".missing-shutter__zoom").getAttribute("href"),
+    src
+  );
+  const bytes = await page.request.get(origin + src);
+  assert.equal(bytes.status(), 200);
+  assert.match(bytes.headers()["content-type"] ?? "", /image\/jpeg/);
+  const body = Buffer.from(await bytes.body());
+  const file = await fs.readFile(
+    new URL(`../../public/${spec.file}`, import.meta.url)
+  );
+  assert.deepEqual(body, file);
+  assert.deepEqual(jpegSize(body), { width: spec.width, height: spec.height });
+  const natural = await image.evaluate(
+    (element) =>
+      new Promise<{ width: number; height: number }>((resolve, reject) => {
+        const img = element as HTMLImageElement;
+        const done = () =>
+          resolve({ width: img.naturalWidth, height: img.naturalHeight });
+        if (img.complete && img.naturalWidth > 0) done();
+        else {
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener(
+            "error",
+            () => reject(new Error("guide image failed")),
+            { once: true }
+          );
+        }
+      })
+  );
+  assert.deepEqual(natural, { width: spec.width, height: spec.height });
+}
+
+function jpegSize(body: Buffer) {
+  let offset = 2;
+  while (offset + 8 < body.length && body[offset] === 0xff) {
+    const marker = body[offset + 1] ?? 0;
+    const length = body.readUInt16BE(offset + 2);
+    if (marker >= 0xc0 && marker <= 0xc2) {
+      return {
+        height: body.readUInt16BE(offset + 5),
+        width: body.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + length;
+  }
+  throw new Error("JPEG has no size marker");
+}
 
 async function blockExternal(
   context: Awaited<ReturnType<Browser["newContext"]>>,

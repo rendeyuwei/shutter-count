@@ -13,6 +13,7 @@ type FakeEvent = {
 interface FakeDocument {
   activeElement: HarnessElement | null;
   root: HarnessElement;
+  documentElement: HarnessElement;
   getElementById: (id: string) => HarnessElement | undefined;
   querySelector: (selector: string) => HarnessElement | undefined;
   createElement: (tag: string) => HarnessElement;
@@ -93,6 +94,9 @@ class HarnessElement {
   setAttribute(name: string, value: string) {
     this.attributes[name] = String(value);
   }
+  getAttribute(name: string) {
+    return this.attributes[name] ?? null;
+  }
   set href(value: string) {
     this.setAttribute("href", value);
   }
@@ -107,7 +111,7 @@ class HarnessElement {
   }
   click() {
     this.clickCount += 1;
-    return this.emit("click");
+    return this.emit("click", { preventDefault() {} });
   }
   focus() {
     this.owner.activeElement = this;
@@ -171,6 +175,7 @@ function createHarness({
 } = {}) {
   const document = { activeElement: null } as FakeDocument;
   document.root = new HarnessElement("body", "", document);
+  document.documentElement = new HarnessElement("html", "", document);
   const intro = new HarnessElement("p", "", document);
   const stage = new HarnessElement("div", "", document);
   const fileInput = new HarnessElement("input", "", document);
@@ -241,6 +246,12 @@ function createHarness({
     replace(url: string) {
       this.pathname = url;
     },
+    assign(url: string) {
+      const next = new URL(url, "http://127.0.0.1");
+      this.pathname = next.pathname;
+      this.search = next.search;
+      this.hash = next.hash;
+    },
   };
   const context = vm.createContext({
     document,
@@ -251,6 +262,14 @@ function createHarness({
       },
     },
     location,
+    history: {
+      pushState(_data: unknown, _title: string, url: string) {
+        const next = new URL(url, "http://127.0.0.1");
+        location.pathname = next.pathname;
+        location.search = next.search;
+        location.hash = next.hash;
+      },
+    },
     localStorage,
     navigator: {},
     URLSearchParams,
@@ -781,13 +800,16 @@ test("english pages keep their language through loading, success, failure, and r
   await missing.upload();
   assert.match(missing.stage.textContent, /Shutter count was not found/);
   assert.match(missing.stage.textContent, /Export Unmodified Original/);
-  assert.match(missing.stage.textContent, /导出未修改的原片/);
+  assert.match(missing.stage.textContent, /English illustration/);
+  assert.doesNotMatch(missing.stage.textContent, /导出未修改的原片/);
   assert.match(missing.stage.textContent, /View full image/);
   const image = missing.byClass("missing-shutter__image")[0];
-  assert.equal(image?.attributes.src, "/iphone-export-original.jpg");
-  assert.equal(image?.attributes.width, "1206");
-  assert.equal(image?.attributes.height, "1550");
-  assert.match(image?.attributes.alt ?? "", /Chinese/);
+  const zoom = missing.byClass("missing-shutter__zoom")[0];
+  assert.equal(image?.attributes.src, "/iphone-export-original-en.jpg");
+  assert.equal(image?.attributes.width, "864");
+  assert.equal(image?.attributes.height, "1152");
+  assert.match(image?.attributes.alt ?? "", /English illustration/);
+  assert.equal(zoom?.attributes.href, "/iphone-export-original-en.jpg");
 });
 
 test("result notes follow noteCode and keep the original note when the code is unknown", async () => {
@@ -860,7 +882,7 @@ test("only a manual switch persists, and a blocked store still changes the URL",
     search: "?album=1",
     hash: "#x",
   });
-  assert.equal(blocked.langSwitch.textContent, "EN");
+  assert.equal(blocked.langSwitch.textContent, "中文");
   await blocked.langSwitch.click();
   assert.equal(blocked.stored.size, 0);
   assert.equal(blocked.cookie(), "");
@@ -881,4 +903,61 @@ test("only a manual switch persists, and a blocked store still changes the URL",
     /^rf-lang=en; Path=\/; Max-Age=31536000; SameSite=Lax$/
   );
   assert.equal(cookieOnly.langSwitch.attributes.href, "/tools/counter/en/");
+});
+
+test("switching language keeps the parsed result and swaps the guide image", async () => {
+  const ui = createHarness({
+    pathname: "/tools/counter/en/",
+    mount: "/tools/counter/",
+    search: "?album=1",
+    hash: "#shot",
+    fetch: () =>
+      response({
+        data: {
+          status: "no_shutter_field",
+          model: "iPhone 15",
+          fileName: "camera.jpg",
+        },
+      }),
+  });
+  await ui.upload();
+  assert.equal(ui.calls.length, 1);
+  assert.match(ui.stage.textContent, /English illustration/);
+  await ui.langSwitch.click();
+  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.location.pathname, "/tools/counter/");
+  assert.equal(ui.location.search, "?album=1&lang=zh");
+  assert.equal(ui.location.hash, "#shot");
+  assert.match(ui.stage.textContent, /未能读取快门次数/);
+  assert.match(ui.stage.textContent, /导出未修改的原片/);
+  assert.match(ui.stage.textContent, /iPhone 15/);
+  assert.doesNotMatch(ui.stage.textContent, /English illustration/);
+  const image = ui.byClass("missing-shutter__image")[0];
+  const zoom = ui.byClass("missing-shutter__zoom")[0];
+  assert.equal(
+    image?.attributes.src,
+    "/tools/counter/iphone-export-original.jpg"
+  );
+  assert.equal(image?.attributes.width, "1206");
+  assert.equal(image?.attributes.height, "1550");
+  assert.equal(
+    zoom?.attributes.href,
+    "/tools/counter/iphone-export-original.jpg"
+  );
+  await ui.langSwitch.click();
+  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.location.pathname, "/tools/counter/en/");
+  assert.match(ui.stage.textContent, /English illustration/);
+  assert.equal(
+    ui.byClass("missing-shutter__image")[0]?.attributes.src,
+    "/tools/counter/iphone-export-original-en.jpg"
+  );
+  assert.equal(
+    ui.byClass("missing-shutter__image")[0]?.attributes.width,
+    "864"
+  );
+  assert.equal(
+    ui.byClass("missing-shutter__image")[0]?.attributes.height,
+    "1152"
+  );
 });

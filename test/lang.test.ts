@@ -10,7 +10,7 @@ import {
   placeInMount,
 } from "../shared/lang.js";
 import { readPref, writePref, type PrefHost } from "../web/storage.js";
-import { alignContract, runEnter, type RfLangContract } from "../web/enter.js";
+import { runEnter } from "../web/enter.js";
 
 const root = new URL("../../", import.meta.url);
 
@@ -231,7 +231,7 @@ test("automatic enter redirects without asking storage to store a preference", (
   assert.equal(contractRan, true);
 });
 
-test("a custom mount corrects place and href before the shared bar reads them", async () => {
+test("the shared contract still misreads a custom mount, and this app does not replace it", async () => {
   const source = await fs.readFile(
     new URL("web/vendor/rf-lang.js", root),
     "utf8"
@@ -241,43 +241,19 @@ test("a custom mount corrects place and href before the shared bar reads them", 
     search: "?album=1",
     hash: "#shot",
   });
-  assert.equal(english.rf.place(english.location.pathname).lang, "zh");
-  alignContract(
-    english.rf as RfLangContract,
-    "/tools/counter",
-    english.location
-  );
-  const here = english.rf.place(english.location.pathname);
-  assert.equal(here.lang, "en");
-  assert.equal(here.site.base, "/tools/counter/");
-  const back = here.lang === "en" ? "zh" : "en";
-  assert.equal(english.rf.href(back), "/tools/counter/?album=1&lang=zh#shot");
-  english.location.hash = "#later";
-  assert.equal(english.rf.href(back), "/tools/counter/?album=1&lang=zh#later");
-
-  const chinese = contractWindow(source, {
-    pathname: "/tools/counter/",
-    search: "?album=1",
-    hash: "#shot",
-  });
-  alignContract(
-    chinese.rf as RfLangContract,
-    "/tools/counter/",
-    chinese.location
-  );
-  assert.equal(chinese.rf.place(chinese.location.pathname).lang, "zh");
-  assert.equal(chinese.rf.href("en"), "/tools/counter/en/?album=1#shot");
-
-  const shutter = contractWindow(source, {
-    pathname: "/shutter/en/",
-    search: "?a=1",
-    hash: "#demo",
-  });
-  const before = shutter.rf.href("zh");
-  alignContract(shutter.rf as RfLangContract, "/shutter/", shutter.location);
-  assert.equal(shutter.rf.place("/shutter/en/").lang, "en");
-  assert.equal(shutter.rf.href("zh"), before);
-  assert.equal(before, "/shutter/?a=1&lang=zh#demo");
+  const place = english.rf.place;
+  const href = english.rf.href;
+  assert.equal(place("/tools/counter/en/").lang, "zh");
+  assert.equal(place("/tools/counter/en/").site.base, "/");
+  assert.equal(href("en"), "/en/tools/counter/en/?album=1#shot");
+  assert.equal(english.rf.place, place);
+  assert.equal(english.rf.href, href);
+  const enter = await fs.readFile(new URL("web/enter.ts", root), "utf8");
+  const app = await fs.readFile(new URL("web/app.ts", root), "utf8");
+  assert.doesNotMatch(enter, /rf\.place\s*=/);
+  assert.doesNotMatch(enter, /rf\.href\s*=/);
+  assert.doesNotMatch(app, /rf\.place\s*=/);
+  assert.doesNotMatch(app, /rf\.href\s*=/);
 });
 
 function contractWindow(

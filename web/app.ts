@@ -1,13 +1,14 @@
 import {
+  explicitChinese,
   hrefFor,
   mountUrl,
   normalizeMount,
   placeInMount,
-  sameMount,
 } from "../shared/lang.js";
 import type { LangCode } from "../shared/lang.js";
 import { loadUploadSettings, classifyResponse } from "./api.js";
 import { COPY } from "./copy.js";
+import { guideFor } from "./guide.js";
 import { createView } from "./render.js";
 import { browserPrefHost, writePref } from "./storage.js";
 import type { ParseOutcome } from "./types.js";
@@ -22,14 +23,21 @@ function readMount(): string {
 }
 
 const mount = readMount();
-const pageLang: LangCode = placeInMount(location.pathname, mount).lang;
-const copy = COPY[pageLang];
+let lang: LangCode = placeInMount(location.pathname, mount).lang;
 const API_URL = mountUrl(mount, "api/parse");
 const CONFIG_URL = mountUrl(mount, "api/config");
 const FETCH_TIMEOUT_MS = 60_000;
 const MIN_LOADING_MS = 400;
 let uploadGeneration = 0;
 let activeController: AbortController | null = null;
+const view = createView({
+  onFile: (file) => {
+    void handleFile(file);
+  },
+  onReset: resetAndPick,
+  copy: COPY[lang],
+  guide: guideFor(mount, lang),
+});
 const {
   fileInput,
   renderUpload,
@@ -38,14 +46,7 @@ const {
   renderFail,
   renderError,
   setUploadLimit,
-} = createView({
-  onFile: (file) => {
-    void handleFile(file);
-  },
-  onReset: resetAndPick,
-  copy,
-  guideImage: mountUrl(mount, "iphone-export-original.jpg"),
-});
+} = view;
 let settingsPromise: Promise<UploadSettings | null> | null = null;
 function getUploadSettings(): Promise<UploadSettings | null> {
   return (settingsPromise ??= loadUploadSettings(CONFIG_URL).then(
@@ -174,43 +175,101 @@ const DEMO_STATES: Record<string, () => void> = {
 /* Init                                                                */
 /* ------------------------------------------------------------------ */
 
-function bindLanguageSwitch() {
-  const anchor = document.querySelector<HTMLAnchorElement>("#lang-switch");
-  if (!anchor) return;
-  const other: LangCode = pageLang === "en" ? "zh" : "en";
-  const sync = () => {
-    anchor.href = hrefFor(
-      other,
-      location.pathname,
-      mount,
-      location.search || "",
-      location.hash || ""
-    );
-  };
-  sync();
-  window.addEventListener("hashchange", sync);
-  anchor.addEventListener("click", () => {
-    writePref(browserPrefHost(), other);
-    sync();
-  });
-  const rf = window.rfLang;
-  if (
-    rf?.href &&
-    rf.place &&
-    !sameMount(rf.place(location.pathname).site.base, mount)
-  ) {
-    rf.href = (lang) =>
-      hrefFor(
-        lang,
-        location.pathname,
-        mount,
-        location.search || "",
-        location.hash || ""
-      );
-    const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
-    if (bar) bar.href = rf.href(other);
+function offeredLang(anchor: HTMLAnchorElement): LangCode | null {
+  const tag = (anchor.hreflang || anchor.lang || "").toLowerCase();
+  if (tag.startsWith("zh")) return "zh";
+  if (tag.startsWith("en")) return "en";
+  return null;
+}
+
+function languageUrl(next: LangCode): string {
+  return hrefFor(
+    next,
+    location.pathname,
+    mount,
+    location.search || "",
+    location.hash || ""
+  );
+}
+
+function paintSwitch(anchor: HTMLAnchorElement, next: LangCode) {
+  const copy = COPY[lang];
+  anchor.textContent = copy.switchLabel;
+  anchor.title = copy.switchTitle;
+  anchor.lang = copy.switchLang;
+  anchor.hreflang = copy.switchLang;
+  anchor.href = languageUrl(next);
+}
+
+/**
+ * Refresh this page's switch. The shared bar is updated only when the
+ * language it already offers is the other language of this page. rfLang.place
+ * and rfLang.href stay the contract's own functions.
+ */
+function syncSwitch() {
+  const copy = COPY[lang];
+  const next: LangCode = lang === "en" ? "zh" : "en";
+  document.documentElement.lang = copy.htmlLang;
+  document.title = copy.title;
+  const description = document.querySelector('meta[name="description"]');
+  if (description) description.setAttribute("content", copy.description);
+  const heading = document.querySelector("h1");
+  if (heading) heading.textContent = copy.h1;
+  const canonical = document.querySelector('link[rel="canonical"]');
+  const alternate = document.querySelector(
+    `link[rel="alternate"][hreflang="${copy.htmlLang}"]`
+  );
+  const canonicalHref = alternate?.getAttribute("href");
+  if (canonical && canonicalHref) canonical.setAttribute("href", canonicalHref);
+  const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
+  const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
+  if (inline) paintSwitch(inline, next);
+  const barAgrees = Boolean(bar && offeredLang(bar) === next);
+  if (bar && barAgrees) paintSwitch(bar, next);
+  if (inline) inline.hidden = barAgrees;
+}
+
+function readUrlLang(): LangCode {
+  const placed = placeInMount(location.pathname, mount).lang;
+  if (placed === "en") return "en";
+  return explicitChinese(location.search) ? "zh" : placed;
+}
+
+function onSwitchClick(event: Event, anchor: HTMLAnchorElement) {
+  const offered = offeredLang(anchor);
+  if (!offered || offered === lang) {
+    event.preventDefault();
+    return;
   }
-  if (document.querySelector("a.rf-lang")) anchor.hidden = true;
+  writePref(browserPrefHost(), offered);
+  const url = languageUrl(offered);
+  if (!view.showingResult()) {
+    if ((anchor.getAttribute("href") || "") !== url) {
+      event.preventDefault();
+      location.assign(url);
+    }
+    return;
+  }
+  event.preventDefault();
+  lang = offered;
+  history.pushState(null, "", url);
+  view.useLocale(COPY[lang], guideFor(mount, lang));
+  syncSwitch();
+}
+
+function bindLanguageSwitch() {
+  const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
+  const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
+  syncSwitch();
+  for (const anchor of [inline, bar]) {
+    anchor?.addEventListener("click", (event) => onSwitchClick(event, anchor));
+  }
+  window.addEventListener("hashchange", syncSwitch);
+  window.addEventListener("popstate", () => {
+    lang = readUrlLang();
+    view.useLocale(COPY[lang], guideFor(mount, lang));
+    syncSwitch();
+  });
 }
 
 function init() {

@@ -431,6 +431,14 @@ textarea:focus-visible {
   text-decoration: none;
 }
 
+.missing-shutter__caption {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .missing-shutter__image {
   display: block;
   width: 100%;

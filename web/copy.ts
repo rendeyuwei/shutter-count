@@ -31,6 +31,7 @@ export interface Copy {
     steps: readonly string[];
     limit: string;
     alt: string;
+    caption: string;
     zoom: string;
   };
   errors: Record<ErrorKind, { title: string; body: string }>;
@@ -88,6 +89,7 @@ const zh: Copy = {
     ],
     limit: "原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。",
     alt: "iPhone 分享界面完整截图，红圈标出导出未修改的原片",
+    caption: "",
     zoom: "查看大图",
   },
   errors: {
@@ -168,12 +170,13 @@ const en: Copy = {
     steps: [
       "In Photos, select the photo.",
       "Tap Share.",
-      "Choose the circled command “导出未修改的原片” (Export Unmodified Original).",
+      "Choose the circled command Export Unmodified Original.",
       "Save the file, then upload it again.",
     ],
     limit:
       "An original file still may not include a readable shutter count. That depends on the camera.",
-    alt: "Full iPhone share-sheet screenshot in Chinese. The red circle marks “导出未修改的原片” (Export Unmodified Original).",
+    alt: "English illustration of the iPhone share sheet. The red circle marks Export Unmodified Original. Appearance may vary by iOS version.",
+    caption: "English illustration. Appearance may vary by iOS version.",
     zoom: "View full image",
   },
   errors: {

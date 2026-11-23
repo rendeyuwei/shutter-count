@@ -1,5 +1,6 @@
 import type { NoteCode } from "../shared/notes.js";
 import type { Copy } from "./copy.js";
+import type { GuideImage } from "./guide.js";
 import type {
   ErrorKind,
   MetadataView,
@@ -20,9 +21,12 @@ export function createView(viewActions: {
   onFile: (file: File) => void;
   onReset: () => void;
   copy: Copy;
-  guideImage: string;
+  guide: GuideImage;
 }) {
-  const copy = viewActions.copy;
+  let copy = viewActions.copy;
+  let guide = viewActions.guide;
+  let mode: "upload" | "result" = "upload";
+  let paint: () => void = () => {};
   let maxUploadMb = 50;
   const introEl = requiredElement<HTMLElement>("#intro");
   const stageEl = requiredElement<HTMLElement>("#stage");
@@ -57,8 +61,6 @@ export function createView(viewActions: {
   /* ------------------------------------------------------------------ */
   /* Error copy                                                          */
   /* ------------------------------------------------------------------ */
-
-  const ERROR_COPY = copy.errors;
 
   /* ------------------------------------------------------------------ */
   /* Small DOM builders                                                  */
@@ -235,17 +237,33 @@ export function createView(viewActions: {
     return null;
   }
 
-  function renderUpload() {
+  function drawUpload() {
     setIntro(copy.intro.upload);
     setStage(buildDropzoneIdle(), buildPrivacyNote());
   }
 
+  function renderUpload() {
+    mode = "upload";
+    paint = drawUpload;
+    paint();
+  }
+
   function renderLoading(fileName: string) {
-    setIntro(copy.intro.upload);
-    setStage(buildDropzoneBusy(fileName), buildPrivacyNote());
+    mode = "result";
+    paint = () => {
+      setIntro(copy.intro.upload);
+      setStage(buildDropzoneBusy(fileName), buildPrivacyNote());
+    };
+    paint();
   }
 
   function renderSuccess(data: SuccessView) {
+    mode = "result";
+    paint = () => drawSuccess(data);
+    paint();
+  }
+
+  function drawSuccess(data: SuccessView) {
     setIntro(copy.intro.success);
 
     const rows: ResultRow[] = [
@@ -300,24 +318,36 @@ export function createView(viewActions: {
 
     const link = document.createElement("a");
     link.className = "missing-shutter__zoom";
-    link.setAttribute("href", viewActions.guideImage);
+    link.setAttribute("href", guide.src);
     link.setAttribute("target", "_blank");
     link.setAttribute("rel", "noopener noreferrer");
 
     const image = document.createElement("img");
     image.className = "missing-shutter__image";
-    image.setAttribute("src", viewActions.guideImage);
-    image.setAttribute("width", "1206");
-    image.setAttribute("height", "1550");
+    image.setAttribute("src", guide.src);
+    image.setAttribute("width", String(guide.width));
+    image.setAttribute("height", String(guide.height));
     image.setAttribute("alt", copy.missing.alt);
     const zoom = document.createElement("span");
     zoom.textContent = copy.missing.zoom;
     link.append(image, zoom);
     section.append(title, causes, guideTitle, steps, limit, link);
+    if (copy.missing.caption) {
+      const caption = document.createElement("p");
+      caption.className = "missing-shutter__caption";
+      caption.textContent = copy.missing.caption;
+      section.append(caption);
+    }
     return section;
   }
 
   function renderFail(data: Partial<MetadataView>) {
+    mode = "result";
+    paint = () => drawFail(data);
+    paint();
+  }
+
+  function drawFail(data: Partial<MetadataView>) {
     setIntro(copy.intro.fail);
 
     const nodes: Node[] = [buildFileChip(data.fileName || copy.fileFallback)];
@@ -336,13 +366,19 @@ export function createView(viewActions: {
   }
 
   function renderError(kind: ErrorKind, fileName?: string | null) {
+    mode = "result";
+    paint = () => drawError(kind, fileName);
+    paint();
+  }
+
+  function drawError(kind: ErrorKind, fileName?: string | null) {
     const message =
       kind === "too_large"
         ? {
-            ...ERROR_COPY.too_large,
+            ...copy.errors.too_large,
             body: copy.tooLarge(maxUploadMb),
           }
-        : ERROR_COPY[kind];
+        : copy.errors[kind];
     setIntro(copy.intro.error);
 
     const nodes: Node[] = [];
@@ -362,6 +398,12 @@ export function createView(viewActions: {
     renderSuccess,
     renderFail,
     renderError,
+    showingResult: () => mode === "result",
+    useLocale(nextCopy: Copy, nextGuide: GuideImage) {
+      copy = nextCopy;
+      guide = nextGuide;
+      paint();
+    },
     setUploadLimit: (value: number) => {
       maxUploadMb = value;
     },

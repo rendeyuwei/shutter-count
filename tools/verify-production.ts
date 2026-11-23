@@ -6,6 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { isRecord } from "../shared/protocol.js";
+import { GUIDE } from "../web/guide.js";
 
 const execute = promisify(execFile);
 const root = process.cwd();
@@ -22,6 +23,22 @@ const isolated = await fs.mkdtemp(
   path.join(os.tmpdir(), "shutter-production-")
 );
 let child: ChildProcess | undefined;
+
+function jpegSize(bytes: Buffer) {
+  let offset = 2;
+  while (offset + 8 < bytes.length && bytes[offset] === 0xff) {
+    const marker = bytes[offset + 1] ?? 0;
+    const length = bytes.readUInt16BE(offset + 2);
+    if (marker >= 0xc0 && marker <= 0xc2) {
+      return {
+        height: bytes.readUInt16BE(offset + 5),
+        width: bytes.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + length;
+  }
+  throw new Error("JPEG has no size marker");
+}
 
 function waitForExit(process: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -136,7 +153,8 @@ try {
     ["app.js", /javascript/],
     ["styles.css", /text\/css/],
     ["favicon.svg", /svg/],
-    ["iphone-export-original.jpg", /image\/jpeg/],
+    [GUIDE.zh.file, /image\/jpeg/],
+    [GUIDE.en.file, /image\/jpeg/],
   ] as const) {
     const response = await request(base + "/" + asset);
     assert.equal(response.status, 200, asset);
@@ -144,25 +162,18 @@ try {
     const bytes = Buffer.from(await response.arrayBuffer());
     if (asset === "app.js") {
       assert.match(bytes.toString("utf8"), /iphone-export-original\.jpg/);
+      assert.match(bytes.toString("utf8"), /iphone-export-original-en\.jpg/);
     }
-    if (asset.endsWith(".jpg")) {
-      assert.equal(bytes[0], 0xff);
-      assert.equal(bytes[1], 0xd8);
-      let offset = 2;
-      let size: { width: number; height: number } | null = null;
-      while (offset + 8 < bytes.length && bytes[offset] === 0xff) {
-        const marker = bytes[offset + 1] ?? 0;
-        const length = bytes.readUInt16BE(offset + 2);
-        if (marker >= 0xc0 && marker <= 0xc2) {
-          size = {
-            height: bytes.readUInt16BE(offset + 5),
-            width: bytes.readUInt16BE(offset + 7),
-          };
-          break;
-        }
-        offset += 2 + length;
-      }
-      assert.deepEqual(size, { width: 1206, height: 1550 });
+    const spec = [GUIDE.zh, GUIDE.en].find((item) => item.file === asset);
+    if (spec) {
+      const file = await fs.readFile(path.join(root, "public", spec.file));
+      assert.deepEqual(bytes, file);
+      assert.deepEqual(jpegSize(bytes), {
+        width: spec.width,
+        height: spec.height,
+      });
+      const nested = await request(base + "/en/" + spec.file);
+      assert.equal(nested.status, 404, spec.file);
     }
   }
   const config: unknown = await (await request(base + "/api/config")).json();

@@ -72,7 +72,7 @@ npm start
 
 共享契约是 [rende-site `src/shell/lang.ts`](https://github.com/rendeyuwei/rende-site/blob/64701ced2b3e495f8e5237148096a5a665e41c17/src/shell/lang.ts) 的 `window.rfLang`（`v` 为 1）。判定顺序：`en/` 是英文，无前缀 URL 上的 `?lang=zh` 是中文；否则使用手选偏好 `rf-lang`（先 `localStorage`，存储抛错时用同名 cookie）；否则取 `navigator.languages` 里第一个 `zh*` 或 `en*`（`zh-HK`、`zh-TW` 都算中文）；否则英文。只有点击语言开关才写入偏好。无前缀页面仅在选择了英文、且页面声明了 `<link rel="alternate" hreflang="en">` 时跳到对应 `en/`。英文页不会再跳，因此不会循环。查询字符串和 hash 会保留。
 
-两份 HTML 都设置 `lang`、指向自己的 canonical，以及 `zh-CN`、`en`、`x-default`（英文）的 `hreflang`。判定脚本内联在 `<head>` 中，位于统计脚本之前。契约里的站点前缀与当前进程挂载一致时（`/shutter/` 或 `/`）直接调用它的 `enter()`。其他挂载使用同一套判定，但 URL 按挂载计算，因为契约表不认识那些前缀。同一段 `<head>` 脚本也会改写这些挂载上的 `place()` 和 `href()`，共享顶栏才能从 `{BASE_PATH}/en/` 回到中文。`/` 和 `/shutter/` 仍使用契约自己的函数。
+两份 HTML 都设置 `lang`、指向自己的 canonical，以及 `zh-CN`、`en`、`x-default`（英文）的 `hreflang`。判定脚本内联在 `<head>` 中，位于统计脚本之前。契约里的站点前缀与当前进程挂载一致时（`/shutter/` 或 `/`）直接调用它的 `enter()`。其他挂载使用同一套判定，但 URL 按挂载计算，因为契约表不认识那些前缀。本页不改写 `place()` 或 `href()`。契约仍会把自定义挂载上的 `{BASE_PATH}/en/` 看成中文，并生成 `/en/...`，所以在登记表能匹配任意挂载之前，共享顶栏无法正确标出那个英文页。页面上已经有解析结果时，切换语言只在内存里换文案，不会把照片再存一次或再上传一次。
 
 这里复制的契约仍是 `shutter.en: false`。快门页面自己已经声明 `hreflang`，所以可以切换语言。主站英文首页和工具菜单在 `src/shell/lang.ts` 把该标志改为 `true` 并重新发布之前，仍会链到中文 `/shutter/`。本仓库不修改那个文件，也不改生产环境。
 
