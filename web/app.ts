@@ -1,12 +1,43 @@
+import {
+  explicitChinese,
+  hrefFor,
+  mountUrl,
+  normalizeMount,
+  placeInMount,
+} from "../shared/lang.js";
+import type { LangCode } from "../shared/lang.js";
 import { loadUploadSettings, classifyResponse } from "./api.js";
+import { COPY } from "./copy.js";
+import { guideFor } from "./guide.js";
 import { createView } from "./render.js";
+import { browserPrefHost, writePref } from "./storage.js";
 import type { ParseOutcome } from "./types.js";
 import type { UploadSettings } from "../shared/protocol.js";
-const API_URL = "./api/parse";
+
+function readMount(): string {
+  const value = window.__SC_MOUNT;
+  if (typeof value !== "string" || !value.startsWith("/")) {
+    throw new Error("Missing shutter mount");
+  }
+  return normalizeMount(value);
+}
+
+const mount = readMount();
+let lang: LangCode = placeInMount(location.pathname, mount).lang;
+const API_URL = mountUrl(mount, "api/parse");
+const CONFIG_URL = mountUrl(mount, "api/config");
 const FETCH_TIMEOUT_MS = 60_000;
 const MIN_LOADING_MS = 400;
 let uploadGeneration = 0;
 let activeController: AbortController | null = null;
+const view = createView({
+  onFile: (file) => {
+    void handleFile(file);
+  },
+  onReset: resetAndPick,
+  copy: COPY[lang],
+  guide: guideFor(mount, lang),
+});
 const {
   fileInput,
   renderUpload,
@@ -15,19 +46,16 @@ const {
   renderFail,
   renderError,
   setUploadLimit,
-} = createView({
-  onFile: (file) => {
-    void handleFile(file);
-  },
-  onReset: resetAndPick,
-});
+} = view;
 let settingsPromise: Promise<UploadSettings | null> | null = null;
 function getUploadSettings(): Promise<UploadSettings | null> {
-  return (settingsPromise ??= loadUploadSettings().then((settings) => {
-    if (settings) setUploadLimit(settings.maxUploadMb);
-    else settingsPromise = null;
-    return settings;
-  }));
+  return (settingsPromise ??= loadUploadSettings(CONFIG_URL).then(
+    (settings) => {
+      if (settings) setUploadLimit(settings.maxUploadMb);
+      else settingsPromise = null;
+      return settings;
+    }
+  ));
 }
 void getUploadSettings();
 export async function handleFile(file: File) {
@@ -131,6 +159,7 @@ const DEMO_STATES: Record<string, () => void> = {
       capturedAt: "2025-11-03 14:22:08",
       approximate: false,
       note: null,
+      noteCode: null,
     }),
   fail: () =>
     renderFail({
@@ -146,7 +175,130 @@ const DEMO_STATES: Record<string, () => void> = {
 /* Init                                                                */
 /* ------------------------------------------------------------------ */
 
+function offeredLang(anchor: HTMLAnchorElement): LangCode | null {
+  const tag = (anchor.hreflang || anchor.lang || "").toLowerCase();
+  if (tag.startsWith("zh")) return "zh";
+  if (tag.startsWith("en")) return "en";
+  return null;
+}
+
+function languageUrl(next: LangCode): string {
+  return hrefFor(
+    next,
+    location.pathname,
+    mount,
+    location.search || "",
+    location.hash || ""
+  );
+}
+
+function paintSwitch(anchor: HTMLAnchorElement, next: LangCode) {
+  const copy = COPY[lang];
+  anchor.textContent = copy.switchLabel;
+  anchor.title = copy.switchTitle;
+  anchor.lang = copy.switchLang;
+  anchor.hreflang = copy.switchLang;
+  anchor.href = languageUrl(next);
+}
+
+// The loaded shell is v2 and refreshes its own bar on "rf:locale".
+// A missing shell, or the inlined v1 copy, keeps the page switch.
+function shellCanRefresh(): boolean {
+  return (window.rfLang?.v ?? 0) >= 2;
+}
+
+function syncPage() {
+  const copy = COPY[lang];
+  const next: LangCode = lang === "en" ? "zh" : "en";
+  document.documentElement.lang = copy.htmlLang;
+  document.title = copy.title;
+  const description = document.querySelector('meta[name="description"]');
+  if (description) description.setAttribute("content", copy.description);
+  const heading = document.querySelector("h1");
+  if (heading) heading.textContent = copy.h1;
+  const canonical = document.querySelector('link[rel="canonical"]');
+  const alternate = document.querySelector(
+    `link[rel="alternate"][hreflang="${copy.htmlLang}"]`
+  );
+  const canonicalHref = alternate?.getAttribute("href");
+  if (canonical && canonicalHref) canonical.setAttribute("href", canonicalHref);
+  const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
+  if (!inline) return;
+  paintSwitch(inline, next);
+  inline.hidden =
+    shellCanRefresh() && Boolean(document.querySelector("a.rf-lang"));
+}
+
+function remember(next: LangCode) {
+  if (shellCanRefresh()) window.rfLang?.choose(next);
+  else writePref(browserPrefHost(), next);
+}
+
+function publishLocale() {
+  if (!shellCanRefresh()) return;
+  document.dispatchEvent(new Event("rf:locale"));
+}
+
+function readUrlLang(): LangCode {
+  const placed = placeInMount(location.pathname, mount).lang;
+  if (placed === "en") return "en";
+  return explicitChinese(location.search) ? "zh" : placed;
+}
+
+function onSwitchClick(event: Event, anchor: HTMLAnchorElement) {
+  const offered = offeredLang(anchor);
+  if (!offered || offered === lang) {
+    event.preventDefault();
+    return;
+  }
+  const url = languageUrl(offered);
+  if (!view.showingResult()) {
+    remember(offered);
+    if ((anchor.getAttribute("href") || "") !== url) {
+      event.preventDefault();
+      location.assign(url);
+    }
+    return;
+  }
+  event.preventDefault();
+  lang = offered;
+  history.pushState(null, "", url);
+  view.useLocale(COPY[lang], guideFor(mount, lang));
+  syncPage();
+  remember(offered);
+  publishLocale();
+}
+
+function barAnchor(event: Event): HTMLAnchorElement | null {
+  const node = event.target;
+  const element =
+    node instanceof Element
+      ? node
+      : node instanceof Node
+        ? node.parentElement
+        : null;
+  const anchor = element?.closest("a.rf-lang");
+  return anchor instanceof HTMLAnchorElement ? anchor : null;
+}
+
+function bindLanguageSwitch() {
+  const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
+  syncPage();
+  inline?.addEventListener("click", (event) => onSwitchClick(event, inline));
+  document.addEventListener?.("click", (event) => {
+    const anchor = barAnchor(event);
+    if (anchor) onSwitchClick(event, anchor);
+  });
+  window.addEventListener("hashchange", syncPage);
+  window.addEventListener("popstate", () => {
+    lang = readUrlLang();
+    view.useLocale(COPY[lang], guideFor(mount, lang));
+    syncPage();
+  });
+}
+
 function init() {
+  bindLanguageSwitch();
   // Never let the browser navigate when a file is dropped outside the zone.
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", (e) => e.preventDefault());

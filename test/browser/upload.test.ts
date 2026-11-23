@@ -25,7 +25,7 @@ test(
       await app.close();
     });
     const origin = await app.listen({ port: 0, host: "127.0.0.1" });
-    const context = await browser.newContext();
+    const context = await browser.newContext({ locale: "zh-CN" });
     const blockedHosts = new Set<string>();
     await context.route("**/*", async (route) => {
       const requested = new URL(route.request().url());
@@ -152,6 +152,7 @@ test(
         model: null,
         capturedAt: null,
         note: null,
+        noteCode: null,
         fileName: "old.jpg",
         requestId: "3cafc9f3-b919-4ad1-9bc8-3a4dbf55dc34",
       };

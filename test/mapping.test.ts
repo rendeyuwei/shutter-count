@@ -67,6 +67,7 @@ test("Canon: ShutterCount is used, not approximate", () => {
   assert.equal(r.shutterSource, "Canon:ShutterCount");
   assert.equal(r.approximate, false);
   assert.equal(r.note, null);
+  assert.equal(r.noteCode, null);
   assert.equal(r.model, "Canon EOS-1D Mark III");
 });
 
@@ -84,6 +85,7 @@ test("Canon: ImageCount is approximate with Chinese note", () => {
     r.note,
     "该机型记录的是图像计数，格式化存储卡后可能归零，仅供参考。"
   );
+  assert.equal(r.noteCode, "canon_image_count");
 });
 
 test("Sony: ShutterCount / ShutterCount2 / ShutterCount3 priority", () => {
@@ -126,6 +128,7 @@ test("FujiFilm: ImageCount is approximate with Chinese note", () => {
     r.note,
     "富士记录的是拍摄计数（含电子快门），固件升级后可能归零，仅供参考。"
   );
+  assert.equal(r.noteCode, "fuji_image_count");
   assert.equal(r.model, "FUJIFILM X-T4");
 });
 

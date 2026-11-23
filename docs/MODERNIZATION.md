@@ -60,7 +60,7 @@ Each phase is a separate reviewable change. Introduce type constraints before ch
 
 ## Build and development
 
-Use Node 22.12 or newer; CI continues to select Node 22 through `.nvmrc`. Node output uses ESM with explicit `.js` import paths. Vite builds relative asset URLs so the same output can be mounted at `/shutter`, `/`, or a custom prefix.
+Use Node 22.12 or newer; CI continues to select Node 22 through `.nvmrc`. Node output uses ESM with explicit `.js` import paths. The built HTML names the icon, stylesheet, and script with `__SC_MOUNT__`; the server fills that token for `/shutter/`, `/`, or a custom prefix.
 
 Phase 1 used transitional `allowJs`; it and `checkJs` are now removed. Every maintained TS source file, Node tool and test is included in strict checking. Browser checking has its own DOM-only configuration so Node globals cannot accidentally enter browser code.
 

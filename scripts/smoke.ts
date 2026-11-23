@@ -46,6 +46,15 @@ async function main() {
     } else {
       console.log(`ok   GET ${base}/ -> 200 ${ct}`);
     }
+    const english = await fetch(base + "/en/");
+    const englishType = english.headers.get("content-type") || "";
+    if (english.status !== 200 || !/text\/html/i.test(englishType)) {
+      fail(
+        `GET ${base}/en/ -> ${english.status} ${englishType} (want 200 text/html)`
+      );
+    } else {
+      console.log(`ok   GET ${base}/en/ -> 200 ${englishType}`);
+    }
   } catch (err) {
     fail(
       `GET ${base}/ -> ${err instanceof Error ? err.message : "Unknown error"}`

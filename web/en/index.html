@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="ShutterCount — upload a camera-original JPEG to read the camera model, shutter count, and capture time. The photo is parsed temporarily and is not kept."
+    />
+    <meta name="theme-color" content="#0c0d0f" />
+    <title>ShutterCount · Check your camera shutter count</title>
+    <!--SC_HEAD-->
+    <script>
+      if (!(window.__SC_LEAVING || (window.rfLang && window.rfLang.leaving))) {
+        var _hmt = _hmt || [];
+        (function () {
+          var hm = document.createElement("script");
+          hm.src = "https://hm.baidu.com/hm.js?f4b1d2fc4d60c37f898b469f83237dab";
+          var s = document.getElementsByTagName("script")[0];
+          s.parentNode.insertBefore(hm, s);
+        })();
+      }
+    </script>
+    <link rel="icon" type="image/svg+xml" href="__SC_MOUNT__favicon.svg" />
+    <link rel="stylesheet" href="__SC_MOUNT__styles.css" />
+    <script src="/shell/topbar.js" defer data-tool="shutter"></script>
+  </head>
+  <body>
+    <div class="upload-screen">
+      <div class="upload-card">
+        <div class="card-top">
+          <a
+            id="lang-switch"
+            class="lang-switch"
+            href="__SC_SWITCH__"
+            hreflang="zh-CN"
+            lang="zh-CN"
+            title="切换到中文"
+            >中文</a
+          >
+        </div>
+        <div class="brand-mark" aria-hidden="true">SC</div>
+        <p class="eyebrow">ShutterCount</p>
+        <h1>Check your camera shutter count</h1>
+        <p class="upload-intro" id="intro" tabindex="-1">
+          Upload a camera-original photo to read the body and shutter count.
+        </p>
+
+        <div id="stage">
+          <div
+            class="upload-dropzone"
+            role="button"
+            tabindex="0"
+            aria-label="Click or drop an original photo here"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 16V4m0 0 4 4m-4-4-4 4"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M4 14v4.2A1.8 1.8 0 0 0 5.8 20h12.4a1.8 1.8 0 0 0 1.8-1.8V14"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+            </svg>
+            <strong>Click or drop an original photo here</strong>
+            <span>JPG and JPEG, preferably a camera-original file</span>
+          </div>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 3 5 6.5v5.2c0 4.1 2.8 7.9 7 8.8 4.2-.9 7-4.7 7-8.8V6.5L12 3Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M9.5 12.2 11.2 14l3.5-3.8"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            Parsed temporarily and not kept
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <input
+      type="file"
+      id="file-input"
+      class="visually-hidden"
+      accept=".jpg,.jpeg,image/jpeg"
+      tabindex="-1"
+      aria-hidden="true"
+    />
+
+    <script type="module" src="__SC_MOUNT__app.js"></script>
+  </body>
+</html>

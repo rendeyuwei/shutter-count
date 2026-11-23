@@ -1,4 +1,5 @@
 import type { MappedResult } from "./result.js";
+import { isNoteCode } from "./notes.js";
 
 export const MAX_SHUTTER_COUNT = 5_000_000;
 export const REQUEST_ID_PATTERN =
@@ -91,6 +92,7 @@ export function decodeParseResult(value: unknown): ParseResult | null {
           shutterSource: null,
           approximate: false,
           note: null,
+          noteCode: null,
         };
       }
       if (
@@ -109,6 +111,7 @@ export function decodeParseResult(value: unknown): ParseResult | null {
         shutterSource: value.shutterSource,
         approximate: value.approximate,
         note,
+        noteCode: isNoteCode(value.noteCode) ? value.noteCode : null,
       };
     }
     case "unsupported_or_corrupt":

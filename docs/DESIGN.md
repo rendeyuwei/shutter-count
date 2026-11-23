@@ -44,6 +44,8 @@
 
 截图时可用原型顶栏 Tab 隐藏或裁掉；产品页面不保留那套原型 chrome。线上页面在 `<head>` 加载共享顶栏 `/shell/topbar.js`。顶栏固定在视口顶部，高度是 `--rf-h`（没有顶栏时按 0）。页面没有自己的 fixed 或 sticky 元素；`body` 用 `padding-top: var(--rf-h, 0px)` 留出位置，上传屏高度为 `calc(100dvh - var(--rf-h, 0px))`。
 
+中文页是 `{BASE_PATH}/`，英文页是 `{BASE_PATH}/en/`。卡片右上角有语言开关。共享顶栏加载后，页内开关隐藏；同页切换派发 `rf:locale`，顶栏整栏换成当前语言并交还焦点。没有这版顶栏时，页内开关继续可用。图标、样式和脚本使用挂载绝对路径。中文缺失帮助使用未裁剪原截图。英文使用整张英文示意图，并注明 English illustration。已有结果时切换语言不重新上传。解析进行中不会自己改语言。
+
 ---
 
 ## 文案与状态
@@ -77,7 +79,7 @@
   - 步骤：在照片中选中、点击分享、选择「导出未修改的原片」、保存后重新上传。
   - 限定：原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。
   - 完整截图按比例缩放，卡内有「查看大图」，点击后在新页面打开原图。
-- English: this state is one help card. It names the two possible causes, lists the iPhone export steps, and says an original may still lack a readable count. The screenshot is complete and opens full size. The page does not show request IDs or diagnostic text.
+- English: this state is one help card. It names the two possible causes, lists the iPhone steps for Export Unmodified Original, and says an original may still lack a readable count. The picture is the full English illustration, with that caption, and opens full size. The page does not show request IDs or diagnostic text.
 - 结果卡：有则展示 **机身型号**、**拍摄时间**（无快门行；示例 Sony ILCE-7M4）
 - 次按钮（secondary）：`重新上传`
 

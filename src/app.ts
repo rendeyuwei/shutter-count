@@ -15,6 +15,8 @@ import { createParser } from "./parse.js";
 import type { Parser, ParseFile } from "./parse.js";
 import { readConfig } from "./config.js";
 import type { ConfigOptions, AppConfig } from "./config.js";
+import { fillPage, pageLinks, safeOrigin } from "./pages.js";
+import { normalizeMount } from "../shared/lang.js";
 import { errorField } from "../shared/protocol.js";
 import type { ParseResult, HealthResponse } from "../shared/protocol.js";
 import {
@@ -161,10 +163,47 @@ export function buildApp(opts: AppOptions = {}) {
   // Routes are registered inside a plugin so that @fastify/rate-limit's
   // onRoute hook (installed when the plugin above loads) sees them.
   app.register(async (instance) => {
+    const mount = normalizeMount(basePath);
+    const pageCache = new Map<"zh" | "en", string>();
+    const templateFor = (lang: "zh" | "en") => {
+      const cached = pageCache.get(lang);
+      if (cached !== undefined) return cached;
+      const file = lang === "zh" ? "index.html" : path.join("en", "index.html");
+      const html = fs.readFileSync(path.join(PUBLIC_DIR, file), "utf8");
+      pageCache.set(lang, html);
+      return html;
+    };
+    const sendPage =
+      (lang: "zh" | "en") => (req: FastifyRequest, reply: FastifyReply) => {
+        const origin = safeOrigin(
+          req.protocol,
+          req.headers.host,
+          config.host,
+          config.port
+        );
+        reply
+          .type("text/html; charset=utf-8")
+          .send(fillPage(templateFor(lang), pageLinks(origin, mount, lang)));
+      };
+
+    instance.get(mount, sendPage("zh"));
+    instance.get(`${mount}index.html`, sendPage("zh"));
+    instance.get(`${mount}en/`, sendPage("en"));
+    instance.get(`${mount}en/index.html`, sendPage("en"));
+    instance.get(`${mount}en`, (req, reply) => {
+      const query = req.url.includes("?")
+        ? req.url.slice(req.url.indexOf("?"))
+        : "";
+      reply.redirect(`${mount}en/${query}`, 308);
+    });
+
     // GET /shutter (no trailing slash) -> 308 to /shutter/
     if (basePath !== "") {
-      instance.get(basePath, (_req, reply) => {
-        reply.redirect(basePath + "/", 308);
+      instance.get(basePath, (req, reply) => {
+        const query = req.url.includes("?")
+          ? req.url.slice(req.url.indexOf("?"))
+          : "";
+        reply.redirect(mount + query, 308);
       });
     }
 

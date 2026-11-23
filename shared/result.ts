@@ -1,3 +1,5 @@
+import type { NoteCode } from "./notes.js";
+
 export type CameraBrand =
   "nikon" | "canon" | "sony" | "fujifilm" | "pentax" | "olympus" | "panasonic";
 
@@ -15,6 +17,7 @@ export type MappedResult = CameraMetadata &
         shutterSource: string;
         approximate: boolean;
         note: string | null;
+        noteCode: NoteCode | null;
       }
     | {
         status: "no_shutter_field";
@@ -22,6 +25,7 @@ export type MappedResult = CameraMetadata &
         shutterSource: null;
         approximate: false;
         note: null;
+        noteCode: null;
       }
   );
 

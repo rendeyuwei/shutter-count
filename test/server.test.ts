@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildApp, cleanupStaleTmpDirs, parseTrustProxy } from "../src/app.js";
+import { GUIDE } from "../web/guide.js";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -110,7 +111,74 @@ test("GET /shutter/ -> 200 html with the product title", async () => {
   assert.equal(res.statusCode, 200);
   assert.match(String(res.headers["content-type"]), /text\/html/);
   assert.match(res.body, /查看相机快门次数/);
-  assert.match(res.body, /<script src="\/shell\/topbar\.js" defer><\/script>/);
+  assert.match(
+    res.body,
+    /<script src="\/shell\/topbar\.js" defer data-tool="shutter"><\/script>/
+  );
+  assert.match(res.body, /<html lang="zh-CN"/);
+  assert.doesNotMatch(res.body, /__SC_(?:MOUNT|CANONICAL|ZH|EN|SWITCH)__/);
+  assert.match(res.body, /hreflang="en"/);
+  assert.match(res.body, /hreflang="zh-CN"/);
+  assert.match(res.body, /hreflang="x-default"/);
+});
+
+test("english pages keep query, heads, and mount-rooted assets", async () => {
+  for (const basePath of ["/", "/shutter", "/tools/counter"]) {
+    const app = await makeApp({ basePath });
+    const prefix = basePath === "/" ? "" : basePath;
+    const slash = await app.inject({
+      method: "GET",
+      url: `${prefix}/en?album=1`,
+    });
+    assert.equal(slash.statusCode, 308, basePath);
+    assert.equal(slash.headers.location, `${prefix}/en/?album=1`);
+    const page = await app.inject({
+      method: "GET",
+      url: `${prefix}/en/?album=1#shot`,
+    });
+    assert.equal(page.statusCode, 200, basePath);
+    assert.match(String(page.headers["content-type"]), /text\/html/);
+    assert.match(page.body, /<html lang="en"/);
+    assert.match(page.body, /Check your camera shutter count/);
+    assert.match(page.body, /Click or drop an original photo here/);
+    assert.doesNotMatch(page.body, /__SC_(?:MOUNT|CANONICAL|ZH|EN|SWITCH)__/);
+    assert.match(page.body, new RegExp(`content="${prefix}/"`));
+    assert.match(page.body, /hreflang="en"/);
+    assert.match(page.body, /hreflang="zh-CN"/);
+    assert.match(page.body, /hreflang="x-default"/);
+    assert.match(
+      page.body,
+      new RegExp(`<meta name="rf-mount" content="${prefix}/" />`)
+    );
+    const zh = await app.inject({ method: "GET", url: `${prefix}/` });
+    assert.match(zh.body, /<html lang="zh-CN"/);
+    assert.match(zh.body, /查看相机快门次数/);
+    const mount = `${prefix}/`;
+    for (const asset of ["favicon.svg", "styles.css", "app.js"]) {
+      assert.match(
+        page.body,
+        new RegExp(`(?:src|href)="${mount}${asset}"`),
+        `${basePath} ${asset}`
+      );
+      const response = await app.inject({
+        method: "GET",
+        url: `${mount}${asset}`,
+      });
+      assert.equal(response.statusCode, 200, `${basePath} ${asset}`);
+    }
+    assert.doesNotMatch(page.body, /(?:src|href)="(?:\.\/|\.\.\/)/);
+    const image = await app.inject({
+      method: "GET",
+      url: `${prefix}/iphone-export-original.jpg`,
+    });
+    assert.equal(image.statusCode, 200, basePath);
+    assert.equal(Buffer.from(image.rawPayload)[0], 0xff);
+    const nested = await app.inject({
+      method: "GET",
+      url: `${prefix}/en/iphone-export-original.jpg`,
+    });
+    assert.equal(nested.statusCode, 404, basePath);
+  }
 });
 
 test("GET /shutter/app.js -> 200 javascript", async () => {
@@ -137,20 +205,32 @@ function jpegSize(body: Buffer) {
   throw new Error("JPEG has no size marker");
 }
 
-test("guide image is the full JPEG under each base path", async () => {
+test("guide images keep their decoded JPEG bytes under each base path", async () => {
   for (const basePath of ["/", "/shutter", "/tools/counter"]) {
     const app = await makeApp({ basePath });
     const prefix = basePath === "/" ? "" : basePath;
-    const res = await app.inject({
-      method: "GET",
-      url: prefix + "/iphone-export-original.jpg",
-    });
-    assert.equal(res.statusCode, 200, basePath);
-    assert.match(String(res.headers["content-type"]), /image\/jpeg/);
-    const body = Buffer.from(res.rawPayload);
-    assert.equal(body[0], 0xff);
-    assert.equal(body[1], 0xd8);
-    assert.deepEqual(jpegSize(body), { width: 1206, height: 1550 });
+    for (const spec of [GUIDE.zh, GUIDE.en]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `${prefix}/${spec.file}`,
+      });
+      assert.equal(res.statusCode, 200, `${basePath} ${spec.file}`);
+      assert.match(String(res.headers["content-type"]), /image\/jpeg/);
+      const body = Buffer.from(res.rawPayload);
+      const file = await fsp.readFile(
+        new URL(`../public/${spec.file}`, import.meta.url)
+      );
+      assert.deepEqual(body, file);
+      assert.deepEqual(jpegSize(body), {
+        width: spec.width,
+        height: spec.height,
+      });
+      const nested = await app.inject({
+        method: "GET",
+        url: `${prefix}/en/${spec.file}`,
+      });
+      assert.equal(nested.statusCode, 404, `${basePath} en/${spec.file}`);
+    }
   }
 });
 
@@ -170,15 +250,25 @@ test("built browser assets resolve under root and custom mounts", async () => {
     const prefix = basePath === "/" ? "" : basePath;
     const page = await app.inject({ method: "GET", url: prefix + "/" });
     assert.equal(page.statusCode, 200);
-    const assets = [...page.body.matchAll(/(?:src|href)="(\.\/[^"#]+)"/g)];
-    assert.equal(assets.length, 3, "compiled script, stylesheet and favicon");
-    for (const [, asset] of assets) {
+    const mount = `${prefix}/`;
+    assert.match(
+      page.body,
+      new RegExp(`<meta name="rf-mount" content="${mount}" />`)
+    );
+    assert.match(page.body, /data-tool="shutter"/);
+    for (const asset of ["favicon.svg", "styles.css", "app.js"]) {
+      assert.match(
+        page.body,
+        new RegExp(`(?:src|href)="${mount}${asset}"`),
+        `${basePath} ${asset}`
+      );
       const response = await app.inject({
         method: "GET",
-        url: prefix + "/" + asset!.slice(2),
+        url: `${mount}${asset}`,
       });
-      assert.equal(response.statusCode, 200, asset);
+      assert.equal(response.statusCode, 200, `${basePath} ${asset}`);
     }
+    assert.doesNotMatch(page.body, /(?:src|href)="(?:\.\/|\.\.\/)/);
     assert.doesNotMatch(page.body, /app\.ts/);
   }
 });

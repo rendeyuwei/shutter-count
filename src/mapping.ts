@@ -2,6 +2,7 @@ import { MAX_SHUTTER_COUNT } from "../shared/protocol.js";
 // Pure mapping from ExifTool raw tags (-G1 -n group-prefixed keys) to the API
 // result shape. No I/O in this module.
 
+import type { NoteCode } from "../shared/notes.js";
 import type {
   CameraBrand,
   MappedResult,
@@ -12,6 +13,7 @@ interface CountSource {
   name: string;
   approximate?: boolean;
   note?: string;
+  noteCode?: NoteCode;
 }
 
 interface BrandRule {
@@ -57,7 +59,12 @@ const BRANDS: BrandRule[] = [
     brandWord: "canon",
     sources: [
       { name: "ShutterCount" },
-      { name: "ImageCount", approximate: true, note: CANON_IMAGE_COUNT_NOTE },
+      {
+        name: "ImageCount",
+        approximate: true,
+        note: CANON_IMAGE_COUNT_NOTE,
+        noteCode: "canon_image_count",
+      },
     ],
   },
   {
@@ -79,7 +86,12 @@ const BRANDS: BrandRule[] = [
     display: "FUJIFILM",
     brandWord: "fujifilm",
     sources: [
-      { name: "ImageCount", approximate: true, note: FUJI_IMAGE_COUNT_NOTE },
+      {
+        name: "ImageCount",
+        approximate: true,
+        note: FUJI_IMAGE_COUNT_NOTE,
+        noteCode: "fuji_image_count",
+      },
     ],
   },
   {
@@ -260,6 +272,7 @@ export function mapTags(rawTags: Record<string, unknown>): MappedResult {
   let shutterSource: string | null = null;
   let approximate = false;
   let note: string | null = null;
+  let noteCode: NoteCode | null = null;
 
   if (brand) {
     for (const src of brand.sources) {
@@ -271,6 +284,7 @@ export function mapTags(rawTags: Record<string, unknown>): MappedResult {
       shutterSource = `${entry.group}:${entry.name}`;
       approximate = Boolean(src.approximate);
       note = src.note ?? null;
+      noteCode = src.noteCode ?? null;
       break;
     }
   } else {
@@ -307,6 +321,7 @@ export function mapTags(rawTags: Record<string, unknown>): MappedResult {
       shutterSource: null,
       approximate: false,
       note: null,
+      noteCode: null,
     };
   }
   return {
@@ -316,6 +331,7 @@ export function mapTags(rawTags: Record<string, unknown>): MappedResult {
     shutterSource,
     approximate,
     note,
+    noteCode,
   };
 }
 

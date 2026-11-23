@@ -1,10 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+import { languagePages } from "./tools/language-html.js";
 
 export default defineConfig({
   root: fileURLToPath(new URL("./web/", import.meta.url)),
   publicDir: fileURLToPath(new URL("./public/", import.meta.url)),
   base: "./",
+  plugins: [languagePages()],
   build: {
     outDir: fileURLToPath(new URL("./dist/public/", import.meta.url)),
     emptyOutDir: true,

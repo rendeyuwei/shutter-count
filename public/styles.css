@@ -133,7 +133,34 @@ textarea:focus-visible {
 
 .upload-card {
   width: min(100%, 630px);
+  max-width: 100%;
   text-align: center;
+  overflow-wrap: break-word;
+}
+
+.card-top {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+}
+
+.lang-switch:hover {
+  color: var(--text);
+}
+
+.lang-switch[hidden] {
+  display: none;
 }
 
 .brand-mark {
@@ -351,6 +378,7 @@ textarea:focus-visible {
 
 .missing-shutter {
   margin: 0 0 20px;
+  overflow-wrap: break-word;
   padding: 18px 18px 16px;
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
   border-radius: var(--radius);
@@ -401,6 +429,14 @@ textarea:focus-visible {
   font-weight: 700;
   text-align: center;
   text-decoration: none;
+}
+
+.missing-shutter__caption {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .missing-shutter__image {

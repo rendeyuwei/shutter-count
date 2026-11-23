@@ -1,9 +1,16 @@
+import type { NoteCode } from "../shared/notes.js";
+import type { Copy } from "./copy.js";
+import type { GuideImage } from "./guide.js";
 import type {
   ErrorKind,
   MetadataView,
   SuccessView,
   ResultRow,
 } from "./types.js";
+function isKnownNote(code: NoteCode): boolean {
+  return code === "canon_image_count" || code === "fuji_image_count";
+}
+
 function requiredElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Missing page element: ${selector}`);
@@ -13,7 +20,13 @@ function requiredElement<T extends HTMLElement>(selector: string): T {
 export function createView(viewActions: {
   onFile: (file: File) => void;
   onReset: () => void;
+  copy: Copy;
+  guide: GuideImage;
 }) {
+  let copy = viewActions.copy;
+  let guide = viewActions.guide;
+  let mode: "upload" | "result" = "upload";
+  let paint: () => void = () => {};
   let maxUploadMb = 50;
   const introEl = requiredElement<HTMLElement>("#intro");
   const stageEl = requiredElement<HTMLElement>("#stage");
@@ -49,29 +62,6 @@ export function createView(viewActions: {
   /* Error copy                                                          */
   /* ------------------------------------------------------------------ */
 
-  const ERROR_COPY: Record<ErrorKind, { title: string; body: string }> = {
-    unsupported: {
-      title: "无法解析该文件",
-      body: "文件可能已损坏或不是 JPG/JPEG 格式，请换一张相机直出的原图再试。",
-    },
-    too_large: {
-      title: "文件过大",
-      body: "请换一张较小的相机原图再试。",
-    },
-    rate_limited: {
-      title: "请求过于频繁",
-      body: "请稍等一分钟后再试。",
-    },
-    busy: {
-      title: "解析服务繁忙",
-      body: "当前等待解析的图片较多，请稍后重试。",
-    },
-    network: {
-      title: "解析失败",
-      body: "网络或服务异常，请稍后重试。",
-    },
-  };
-
   /* ------------------------------------------------------------------ */
   /* Small DOM builders                                                  */
   /* ------------------------------------------------------------------ */
@@ -88,7 +78,7 @@ export function createView(viewActions: {
     const p = document.createElement("p");
     p.className = "privacy-note";
     p.append(icon("shield"));
-    p.append(document.createTextNode("图片仅临时解析，不长期保存"));
+    p.append(document.createTextNode(copy.privacy));
     return p;
   }
 
@@ -97,13 +87,13 @@ export function createView(viewActions: {
     dz.className = "upload-dropzone";
     dz.setAttribute("role", "button");
     dz.setAttribute("tabindex", "0");
-    dz.setAttribute("aria-label", "点击或拖放原图到这里");
+    dz.setAttribute("aria-label", copy.dropzone.label);
     dz.append(icon("upload"));
 
     const strong = document.createElement("strong");
-    strong.textContent = "点击或拖放原图到这里";
+    strong.textContent = copy.dropzone.label;
     const span = document.createElement("span");
-    span.textContent = "支持 JPG、JPEG，建议相机直出原图";
+    span.textContent = copy.dropzone.hint;
     dz.append(strong, span);
 
     // Click / keyboard open the picker.
@@ -162,9 +152,9 @@ export function createView(viewActions: {
     spinner.setAttribute("aria-hidden", "true");
     const strong = document.createElement("strong");
     strong.className = "loading-hint";
-    strong.textContent = "正在解析原图…";
+    strong.textContent = copy.loading.title;
     const span = document.createElement("span");
-    span.textContent = `${fileName} · 请稍候`;
+    span.textContent = copy.loading.wait(fileName);
     dz.append(spinner, strong, span);
     return dz;
   }
@@ -238,40 +228,63 @@ export function createView(viewActions: {
   /* State renderers                                                     */
   /* ------------------------------------------------------------------ */
 
-  function renderUpload() {
-    setIntro("上传一张相机原图，读取机身与快门计数。");
+  function localizedNote(data: SuccessView): string | null {
+    if (data.noteCode && isKnownNote(data.noteCode)) {
+      return copy.notes[data.noteCode];
+    }
+    if (data.note) return data.note;
+    if (data.approximate) return copy.notes.approximate;
+    return null;
+  }
+
+  function drawUpload() {
+    setIntro(copy.intro.upload);
     setStage(buildDropzoneIdle(), buildPrivacyNote());
   }
 
+  function renderUpload() {
+    mode = "upload";
+    paint = drawUpload;
+    paint();
+  }
+
   function renderLoading(fileName: string) {
-    setIntro("上传一张相机原图，读取机身与快门计数。");
-    setStage(buildDropzoneBusy(fileName), buildPrivacyNote());
+    mode = "result";
+    paint = () => {
+      setIntro(copy.intro.upload);
+      setStage(buildDropzoneBusy(fileName), buildPrivacyNote());
+    };
+    paint();
   }
 
   function renderSuccess(data: SuccessView) {
-    setIntro("已从原图中读取到机身与快门信息。");
+    mode = "result";
+    paint = () => drawSuccess(data);
+    paint();
+    introEl.focus();
+  }
+
+  function drawSuccess(data: SuccessView) {
+    setIntro(copy.intro.success);
 
     const rows: ResultRow[] = [
-      { label: "机身型号", value: data.model || "未知" },
+      { label: copy.labels.model, value: data.model || copy.labels.unknown },
       {
-        label: "快门次数",
+        label: copy.labels.shutter,
         value: Number(data.shutterCount).toLocaleString("en-US"),
         shutter: true,
-        note:
-          data.note ||
-          (data.approximate ? "该数值为近似值（相机记录的拍摄张数）。" : null),
+        note: localizedNote(data),
       },
     ];
     if (data.capturedAt) {
-      rows.push({ label: "拍摄时间", value: data.capturedAt });
+      rows.push({ label: copy.labels.capturedAt, value: data.capturedAt });
     }
 
     setStage(
-      buildFileChip(data.fileName || "upload"),
-      buildResultCard(rows, "快门读取结果"),
-      buildActions("再查一张", "primary")
+      buildFileChip(data.fileName || copy.fileFallback),
+      buildResultCard(rows, copy.resultLabel),
+      buildActions(copy.again, "primary")
     );
-    introEl.focus();
   }
 
   function buildMissingShutterHelp() {
@@ -279,29 +292,21 @@ export function createView(viewActions: {
     section.className = "missing-shutter";
 
     const title = document.createElement("h2");
-    title.textContent = "未能读取快门次数";
+    title.textContent = copy.missing.title;
 
     const causes = document.createElement("ul");
     causes.className = "missing-shutter__causes";
-    for (const text of [
-      "相机或该文件可能不提供此信息。",
-      "也可能在编辑、导出或分享时丢失。",
-    ]) {
+    for (const text of copy.missing.causes) {
       const item = document.createElement("li");
       item.textContent = text;
       causes.append(item);
     }
 
     const guideTitle = document.createElement("h3");
-    guideTitle.textContent = "iPhone 用户可尝试";
+    guideTitle.textContent = copy.missing.guideTitle;
     const steps = document.createElement("ol");
     steps.className = "missing-shutter__steps";
-    for (const text of [
-      "在照片中选中",
-      "点击分享",
-      "选择“导出未修改的原片”",
-      "保存后重新上传",
-    ]) {
+    for (const text of copy.missing.steps) {
       const item = document.createElement("li");
       item.textContent = text;
       steps.append(item);
@@ -309,66 +314,81 @@ export function createView(viewActions: {
 
     const limit = document.createElement("p");
     limit.className = "missing-shutter__limit";
-    limit.textContent =
-      "原片也不保证一定能查到，仍取决于相机是否记录了可读取的快门次数。";
+    limit.textContent = copy.missing.limit;
 
     const link = document.createElement("a");
     link.className = "missing-shutter__zoom";
-    link.setAttribute("href", "./iphone-export-original.jpg");
+    link.setAttribute("href", guide.src);
     link.setAttribute("target", "_blank");
     link.setAttribute("rel", "noopener noreferrer");
 
     const image = document.createElement("img");
     image.className = "missing-shutter__image";
-    image.setAttribute("src", "./iphone-export-original.jpg");
-    image.setAttribute("width", "1206");
-    image.setAttribute("height", "1550");
-    image.setAttribute(
-      "alt",
-      "iPhone 分享界面完整截图，红圈标出导出未修改的原片"
-    );
+    image.setAttribute("src", guide.src);
+    image.setAttribute("width", String(guide.width));
+    image.setAttribute("height", String(guide.height));
+    image.setAttribute("alt", copy.missing.alt);
     const zoom = document.createElement("span");
-    zoom.textContent = "查看大图";
+    zoom.textContent = copy.missing.zoom;
     link.append(image, zoom);
     section.append(title, causes, guideTitle, steps, limit, link);
+    if (copy.missing.caption) {
+      const caption = document.createElement("p");
+      caption.className = "missing-shutter__caption";
+      caption.textContent = copy.missing.caption;
+      section.append(caption);
+    }
     return section;
   }
 
   function renderFail(data: Partial<MetadataView>) {
-    setIntro("已解析元数据，但未能读到快门计数。");
-
-    const nodes: Node[] = [buildFileChip(data.fileName || "upload")];
-    nodes.push(buildMissingShutterHelp());
-
-    const rows: ResultRow[] = [];
-    if (data.model) rows.push({ label: "机身型号", value: data.model });
-    if (data.capturedAt)
-      rows.push({ label: "拍摄时间", value: data.capturedAt });
-    if (rows.length > 0) nodes.push(buildResultCard(rows, "已知元数据"));
-
-    nodes.push(buildActions("重新上传", "secondary"));
-    setStage(...nodes);
+    mode = "result";
+    paint = () => drawFail(data);
+    paint();
     introEl.focus();
   }
 
+  function drawFail(data: Partial<MetadataView>) {
+    setIntro(copy.intro.fail);
+
+    const nodes: Node[] = [buildFileChip(data.fileName || copy.fileFallback)];
+    nodes.push(buildMissingShutterHelp());
+
+    const rows: ResultRow[] = [];
+    if (data.model) rows.push({ label: copy.labels.model, value: data.model });
+    if (data.capturedAt) {
+      rows.push({ label: copy.labels.capturedAt, value: data.capturedAt });
+    }
+    if (rows.length > 0) nodes.push(buildResultCard(rows, copy.knownLabel));
+
+    nodes.push(buildActions(copy.reupload, "secondary"));
+    setStage(...nodes);
+  }
+
   function renderError(kind: ErrorKind, fileName?: string | null) {
-    const copy =
+    mode = "result";
+    paint = () => drawError(kind, fileName);
+    paint();
+    introEl.focus();
+  }
+
+  function drawError(kind: ErrorKind, fileName?: string | null) {
+    const message =
       kind === "too_large"
         ? {
-            ...ERROR_COPY.too_large,
-            body: `单张图片不能超过 ${maxUploadMb} MB，请换一张原图再试。`,
+            ...copy.errors.too_large,
+            body: copy.tooLarge(maxUploadMb),
           }
-        : ERROR_COPY[kind];
-    setIntro("未能解析这张图片。");
+        : copy.errors[kind];
+    setIntro(copy.intro.error);
 
     const nodes: Node[] = [];
     if (fileName) nodes.push(buildFileChip(fileName));
     nodes.push(
-      buildWarnBanner(copy.title, copy.body),
-      buildActions("重新上传", "secondary")
+      buildWarnBanner(message.title, message.body),
+      buildActions(copy.reupload, "secondary")
     );
     setStage(...nodes);
-    introEl.focus();
   }
 
   return {
@@ -378,6 +398,12 @@ export function createView(viewActions: {
     renderSuccess,
     renderFail,
     renderError,
+    showingResult: () => mode === "result",
+    useLocale(nextCopy: Copy, nextGuide: GuideImage) {
+      copy = nextCopy;
+      guide = nextGuide;
+      paint();
+    },
     setUploadLimit: (value: number) => {
       maxUploadMb = value;
     },

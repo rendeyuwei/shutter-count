@@ -7,7 +7,7 @@ export type MetadataView = Pick<MappedResult, "model" | "capturedAt"> & {
 export type SuccessView = MetadataView &
   Pick<
     Extract<MappedResult, { status: "ok" }>,
-    "shutterCount" | "approximate" | "note"
+    "shutterCount" | "approximate" | "note" | "noteCode"
   >;
 export type ParseOutcome =
   | { kind: "success"; data: SuccessView }
