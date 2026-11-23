@@ -201,11 +201,11 @@ function paintSwitch(anchor: HTMLAnchorElement, next: LangCode) {
   anchor.href = languageUrl(next);
 }
 
-/**
- * Refresh this page's switch. The shared bar is updated only when the
- * language it already offers is the other language of this page. rfLang.place
- * and rfLang.href stay the contract's own functions.
- */
+// True after the shared switch initially offered this page's other language.
+// Later paints keep that one anchor current. The rest of the bar waits for
+// the shell's own refresh. rfLang.place and rfLang.href are not replaced.
+let barFollowsPage = false;
+
 function syncSwitch() {
   const copy = COPY[lang];
   const next: LangCode = lang === "en" ? "zh" : "en";
@@ -224,9 +224,11 @@ function syncSwitch() {
   const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
   const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
   if (inline) paintSwitch(inline, next);
-  const barAgrees = Boolean(bar && offeredLang(bar) === next);
-  if (bar && barAgrees) paintSwitch(bar, next);
-  if (inline) inline.hidden = barAgrees;
+  if (bar && (barFollowsPage || offeredLang(bar) === next)) {
+    barFollowsPage = true;
+    paintSwitch(bar, next);
+  }
+  if (inline) inline.hidden = Boolean(bar) && barFollowsPage;
 }
 
 function readUrlLang(): LangCode {

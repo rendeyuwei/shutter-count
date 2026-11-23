@@ -149,15 +149,20 @@ test("english pages keep query, heads, and mount-rooted assets", async () => {
     const zh = await app.inject({ method: "GET", url: `${prefix}/` });
     assert.match(zh.body, /<html lang="zh-CN"/);
     assert.match(zh.body, /查看相机快门次数/);
-    const assets = [...page.body.matchAll(/(?:src|href)="(\.\.\/[^"#]+)"/g)];
-    assert.equal(assets.length, 3, basePath);
-    for (const [, asset] of assets) {
+    const mount = `${prefix}/`;
+    for (const asset of ["favicon.svg", "styles.css", "app.js"]) {
+      assert.match(
+        page.body,
+        new RegExp(`(?:src|href)="${mount}${asset}"`),
+        `${basePath} ${asset}`
+      );
       const response = await app.inject({
         method: "GET",
-        url: `${prefix}/${asset!.slice(3)}`,
+        url: `${mount}${asset}`,
       });
       assert.equal(response.statusCode, 200, `${basePath} ${asset}`);
     }
+    assert.doesNotMatch(page.body, /(?:src|href)="(?:\.\/|\.\.\/)/);
     const image = await app.inject({
       method: "GET",
       url: `${prefix}/iphone-export-original.jpg`,
@@ -241,15 +246,20 @@ test("built browser assets resolve under root and custom mounts", async () => {
     const prefix = basePath === "/" ? "" : basePath;
     const page = await app.inject({ method: "GET", url: prefix + "/" });
     assert.equal(page.statusCode, 200);
-    const assets = [...page.body.matchAll(/(?:src|href)="(\.\/[^"#]+)"/g)];
-    assert.equal(assets.length, 3, "compiled script, stylesheet and favicon");
-    for (const [, asset] of assets) {
+    const mount = `${prefix}/`;
+    for (const asset of ["favicon.svg", "styles.css", "app.js"]) {
+      assert.match(
+        page.body,
+        new RegExp(`(?:src|href)="${mount}${asset}"`),
+        `${basePath} ${asset}`
+      );
       const response = await app.inject({
         method: "GET",
-        url: prefix + "/" + asset!.slice(2),
+        url: `${mount}${asset}`,
       });
-      assert.equal(response.statusCode, 200, asset);
+      assert.equal(response.statusCode, 200, `${basePath} ${asset}`);
     }
+    assert.doesNotMatch(page.body, /(?:src|href)="(?:\.\/|\.\.\/)/);
     assert.doesNotMatch(page.body, /app\.ts/);
   }
 });

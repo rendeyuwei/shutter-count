@@ -13,6 +13,14 @@ function assertInline(source: string, name: string): void {
   }
 }
 
+/** Icon, stylesheet, and app script stay on the mount after pushState. */
+export function mountAssetRefs(html: string): string {
+  return html.replace(
+    /((?:href|src)=")(?:\.\/|\.\.\/|\/)(favicon\.svg|styles\.css|app\.(?:js|ts))"/g,
+    '$1__SC_MOUNT__$2"'
+  );
+}
+
 function fillDev(html: string, lang: "zh" | "en"): string {
   const zh = `${DEV_ORIGIN}/`;
   const en = `${DEV_ORIGIN}/en/`;
@@ -61,22 +69,36 @@ export function languagePages(): Plugin {
 
   return {
     name: "shutter-language-pages",
+    // After vite:build-html has emitted index.html into the bundle.
+    enforce: "post",
     buildStart: prepare,
     transformIndexHtml: {
       order: "post",
       async handler(html, ctx) {
         await prepare();
         const injected = html.replace("<!--SC_HEAD-->", () => head);
-        return ctx.server ? fillDev(injected, "zh") : injected;
+        return ctx.server ? fillDev(mountAssetRefs(injected), "zh") : injected;
       },
     },
-    async generateBundle() {
-      await prepare();
-      this.emitFile({
-        type: "asset",
-        fileName: "en/index.html",
-        source: enTemplate.replace("<!--SC_HEAD-->", () => head),
-      });
+    generateBundle: {
+      order: "post",
+      async handler(_options, bundle) {
+        await prepare();
+        for (const item of Object.values(bundle)) {
+          if (
+            item.type === "asset" &&
+            item.fileName === "index.html" &&
+            typeof item.source === "string"
+          ) {
+            item.source = mountAssetRefs(item.source);
+          }
+        }
+        this.emitFile({
+          type: "asset",
+          fileName: "en/index.html",
+          source: enTemplate.replace("<!--SC_HEAD-->", () => head),
+        });
+      },
     },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
@@ -100,7 +122,7 @@ export function languagePages(): Plugin {
             fillDev(
               enTemplate
                 .replace("<!--SC_HEAD-->", () => head)
-                .replace('src="../app.js"', 'src="/app.ts"'),
+                .replace('src="__SC_MOUNT__app.js"', 'src="/app.ts"'),
               "en"
             )
           );

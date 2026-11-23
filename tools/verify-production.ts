@@ -147,7 +147,12 @@ try {
   const englishHtml = await english.text();
   assert.match(englishHtml, /<html lang="en"/);
   assert.match(englishHtml, /Check your camera shutter count/);
-  assert.match(englishHtml, /\.\.\/app\.js/);
+  assert.match(englishHtml, /\/preview\/shutter\/app\.js/);
+  assert.match(englishHtml, /\/preview\/shutter\/styles\.css/);
+  assert.match(englishHtml, /\/preview\/shutter\/favicon\.svg/);
+  assert.match(chinese, /\/preview\/shutter\/app\.js/);
+  assert.doesNotMatch(englishHtml, /(?:src|href)="(?:\.\/|\.\.\/)/);
+  assert.doesNotMatch(chinese, /(?:src|href)="(?:\.\/|\.\.\/)/);
   assert.doesNotMatch(englishHtml, /__SC_(?:MOUNT|CANONICAL|ZH|EN|SWITCH)__/);
   for (const [asset, type] of [
     ["app.js", /javascript/],

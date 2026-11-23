@@ -1,0 +1,286 @@
+"use strict";
+(function () {
+    const V = 1;
+    const KEY = "rf-lang";
+    const HREFLANG = { zh: "zh-CN", en: "en" };
+    const SITES = [
+        { id: "easypic", base: "/easypic/", en: false },
+        { id: "shutter", base: "/shutter/", en: false },
+        { id: "recipes", base: "/recipes/", en: false },
+        { id: "home", base: "/", en: true },
+    ];
+    const place = (pathname) => {
+        const path = pathname || "/";
+        const site = SITES.find((s) => path.indexOf(s.base) === 0 || `${path}/` === s.base) ?? SITES[SITES.length - 1];
+        let rest = path.slice(site.base.length);
+        let lang = "zh";
+        if (rest === "en" || rest.indexOf("en/") === 0) {
+            lang = "en";
+            rest = rest.slice(3);
+        }
+        return { site, lang, rest: rest.replace(/^\/+/, "") };
+    };
+    const match = (tags) => {
+        for (const tag of tags) {
+            const primary = String(tag).toLowerCase().split(/[-_]/)[0];
+            if (primary === "zh" || primary === "en")
+                return primary;
+        }
+        return null;
+    };
+    const pref = () => {
+        let value = null;
+        try {
+            value = localStorage.getItem(KEY);
+        }
+        catch {
+            value = null;
+        }
+        if (value !== "zh" && value !== "en") {
+            try {
+                value = /(?:^|;\s*)rf-lang=(zh|en)(?:;|$)/.exec(document.cookie)?.[1] ?? null;
+            }
+            catch {
+                value = null;
+            }
+        }
+        return value === "zh" || value === "en" ? value : null;
+    };
+    const choose = (lang) => {
+        try {
+            localStorage.setItem(KEY, lang);
+        }
+        catch {
+            try {
+                const secure = location.protocol === "https:" ? "; Secure" : "";
+                document.cookie = `${KEY}=${lang}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+            }
+            catch {
+                return false;
+            }
+        }
+        return pref() === lang;
+    };
+    const offers = (lang) => !!document.querySelector(`link[rel="alternate"][hreflang="${HREFLANG[lang]}"]`);
+    const explicitZh = () => /(?:^|[?&])lang=zh(?:&|$)/.test(location.search || "");
+    const query = (zh) => {
+        const parts = (location.search || "")
+            .replace(/^\?/, "")
+            .split("&")
+            .filter((part) => part && part.split("=")[0] !== "lang");
+        if (zh)
+            parts.push("lang=zh");
+        return parts.length ? `?${parts.join("&")}` : "";
+    };
+    const href = (lang) => {
+        const here = place(location.pathname);
+        return `${here.site.base}${lang === "en" ? "en/" : ""}${here.rest}${query(lang === "zh")}${location.hash || ""}`;
+    };
+    const siteHref = (id) => {
+        const site = SITES.find((s) => s.id === id) ?? SITES[SITES.length - 1];
+        if (place(location.pathname).lang === "en")
+            return site.en ? `${site.base}en/` : site.base;
+        return explicitZh() && pref() !== "zh" ? `${site.base}?lang=zh` : site.base;
+    };
+    const enter = () => {
+        if (place(location.pathname).lang === "en" || explicitZh())
+            return;
+        const languages = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+        const want = pref() ?? match(languages) ?? "en";
+        if (want === "en" && offers("en")) {
+            api.leaving = true;
+            location.replace(href("en"));
+        }
+    };
+    const host = window;
+    const api = { v: V, sites: SITES, leaving: false, place, match, pref, choose, offers, href, siteHref, enter };
+    if (!host.rfLang || host.rfLang.v < V)
+        host.rfLang = api;
+    const script = document.currentScript;
+    if (script && script.hasAttribute("data-rf-enter"))
+        host.rfLang.enter();
+})();
+"use strict";
+(function () {
+    const TOOLS = [
+        {
+            id: "easypic",
+            name: { zh: "EasyPic", en: "EasyPic" },
+            d: { zh: "图片压缩与格式转换", en: "Image compression and format conversion" },
+            bg: "#0c0d0f",
+            fg: "#efac4b",
+            m: "EP",
+        },
+        {
+            id: "shutter",
+            name: { zh: "快门计数", en: "ShutterCount" },
+            d: { zh: "从原图读取快门次数", en: "Read shutter count from an original photo" },
+            bg: "#1b1e22",
+            fg: "#efac4b",
+            m: "SC",
+        },
+        {
+            id: "recipes",
+            name: { zh: "家常菜本", en: "Home Recipes" },
+            d: { zh: "做过的菜，记下来", en: "Dishes I've cooked, written down" },
+            bg: "#CFE0D6",
+            fg: "#1B3A8C",
+            m: "菜",
+        },
+    ];
+    const COPY = {
+        zh: { home: "rende.fun 主站", back: "回到主站", tools: "工具", nav: "切换工具", all: "全部工具" },
+        en: { home: "rende.fun home", back: "Back to home", tools: "Tools", nav: "Switch tool", all: "All tools" },
+    };
+    const host = window;
+    if (host.__rfBar)
+        return;
+    const rf = host.rfLang;
+    if (!rf)
+        return;
+    host.__rfBar = 1;
+    const current = document.currentScript;
+    const script = current && current.nodeName === "SCRIPT" ? current : null;
+    const base = script?.src ? script.src.replace(/topbar\.js.*$/, "") : "/shell/";
+    const here = rf.place(location.pathname);
+    const lang = here.lang;
+    const text = COPY[lang];
+    const homeHref = () => script?.dataset.home || rf.siteHref("home");
+    const currentId = script?.dataset.tool || (here.site.id === "home" ? "" : here.site.id);
+    const active = TOOLS.find((tool) => tool.id === currentId);
+    if (!document.querySelector("link[data-rf]")) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = `${base}topbar.css`;
+        link.dataset.rf = "1";
+        document.head.appendChild(link);
+    }
+    const bar = document.createElement("header");
+    bar.className = "rf-bar";
+    bar.setAttribute("role", "banner");
+    bar.lang = lang === "en" ? "en" : "zh-CN";
+    const logo = document.createElement("a");
+    logo.className = "rf-logo";
+    logo.href = homeHref();
+    logo.setAttribute("aria-label", text.home);
+    logo.innerHTML = '<span class="rf-wm">rende</span><span class="rf-tag">fun</span>';
+    bar.appendChild(logo);
+    if (active) {
+        const sep = document.createElement("span");
+        sep.className = "rf-sep";
+        const label = document.createElement("span");
+        label.className = "rf-cur";
+        label.textContent = active.name[lang];
+        bar.append(sep, label);
+    }
+    const spacer = document.createElement("span");
+    spacer.className = "rf-sp";
+    bar.appendChild(spacer);
+    if (active) {
+        const back = document.createElement("a");
+        back.className = "rf-home";
+        back.href = homeHref();
+        back.setAttribute("aria-label", text.back);
+        back.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M8.5 3 4.5 7l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span class="rf-t"></span>';
+        back.querySelector(".rf-t").textContent = text.back;
+        bar.appendChild(back);
+    }
+    const other = lang === "en" ? "zh" : "en";
+    if (rf.offers(other)) {
+        const toggle = document.createElement("a");
+        toggle.className = "rf-lang";
+        toggle.lang = other === "en" ? "en" : "zh-CN";
+        toggle.hreflang = toggle.lang;
+        toggle.textContent = other === "en" ? "EN" : "中文";
+        toggle.title = other === "en" ? "Switch to English" : "切换到中文";
+        const sync = () => {
+            toggle.href = rf.href(other);
+        };
+        sync();
+        window.addEventListener("hashchange", sync);
+        toggle.addEventListener("click", () => {
+            rf.choose(other);
+            sync();
+        });
+        bar.appendChild(toggle);
+    }
+    const button = document.createElement("button");
+    button.className = "rf-btn";
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "rf-menu");
+    button.append(`${text.tools} `);
+    button.insertAdjacentHTML("beforeend", '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>');
+    const menu = document.createElement("nav");
+    menu.className = "rf-menu";
+    menu.id = "rf-menu";
+    menu.setAttribute("aria-label", text.nav);
+    const swatch = (bg, fg, mark) => {
+        const sw = document.createElement("span");
+        sw.className = "rf-sw";
+        sw.setAttribute("aria-hidden", "true");
+        sw.style.background = bg;
+        sw.style.color = fg;
+        sw.textContent = mark;
+        return sw;
+    };
+    for (const tool of TOOLS) {
+        const link = document.createElement("a");
+        link.href = rf.siteHref(tool.id);
+        if (tool.id === currentId)
+            link.setAttribute("aria-current", "page");
+        const textBox = document.createElement("span");
+        const name = document.createElement("span");
+        name.className = "rf-n";
+        name.textContent = tool.name[lang];
+        const desc = document.createElement("span");
+        desc.className = "rf-d";
+        desc.textContent = tool.d[lang];
+        textBox.append(name, desc);
+        link.append(swatch(tool.bg, tool.fg, tool.m), textBox);
+        menu.appendChild(link);
+    }
+    const rule = document.createElement("hr");
+    const all = document.createElement("a");
+    all.href = homeHref();
+    const allName = document.createElement("span");
+    allName.className = "rf-n";
+    allName.textContent = text.all;
+    all.append(swatch("#2A2D33", "#7FD1AE", "↖"), allName);
+    menu.append(rule, all);
+    bar.append(button, menu);
+    const mount = () => {
+        document.body.insertBefore(bar, document.body.firstChild);
+        document.documentElement.classList.add("rf-has-bar");
+        for (const link of document.querySelectorAll("a[data-rf-site]")) {
+            link.href = rf.siteHref(link.dataset.rfSite || "home");
+        }
+    };
+    if (document.body)
+        mount();
+    else
+        document.addEventListener("DOMContentLoaded", mount);
+    const setOpen = (open) => {
+        menu.classList.toggle("open", open);
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = !menu.classList.contains("open");
+        setOpen(open);
+        if (open)
+            menu.querySelector("a")?.focus();
+    });
+    document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!target || !bar.contains(target))
+            setOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && menu.classList.contains("open")) {
+            setOpen(false);
+            button.focus();
+        }
+    });
+})();
