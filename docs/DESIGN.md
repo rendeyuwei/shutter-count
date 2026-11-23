@@ -44,6 +44,8 @@
 
 截图时可用原型顶栏 Tab 隐藏或裁掉；产品页面不保留那套原型 chrome。线上页面在 `<head>` 加载共享顶栏 `/shell/topbar.js`。顶栏固定在视口顶部，高度是 `--rf-h`（没有顶栏时按 0）。页面没有自己的 fixed 或 sticky 元素；`body` 用 `padding-top: var(--rf-h, 0px)` 留出位置，上传屏高度为 `calc(100dvh - var(--rf-h, 0px))`。
 
+中文页是 `{BASE_PATH}/`，英文页是 `{BASE_PATH}/en/`。卡片右上角有语言开关；共享顶栏已经显示切换器时，页内开关隐藏。英文缺失快门帮助仍使用同一张未裁剪的中文 iPhone 分享截图，并说明红圈中的「导出未修改的原片」对应 Apple 支持文档里的 Export Unmodified Original。解析进行中不改变当前页的语言。
+
 ---
 
 ## 文案与状态

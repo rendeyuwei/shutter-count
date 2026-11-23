@@ -122,7 +122,16 @@ try {
   assert.equal(healthBody.status, "ok");
   const page = await request(base + "/");
   assert.equal(page.status, 200);
-  await page.body?.cancel();
+  const chinese = await page.text();
+  assert.match(chinese, /<html lang="zh-CN"/);
+  assert.match(chinese, /查看相机快门次数/);
+  const english = await request(base + "/en/");
+  assert.equal(english.status, 200);
+  const englishHtml = await english.text();
+  assert.match(englishHtml, /<html lang="en"/);
+  assert.match(englishHtml, /Check your camera shutter count/);
+  assert.match(englishHtml, /\.\.\/app\.js/);
+  assert.doesNotMatch(englishHtml, /__SC_(?:MOUNT|CANONICAL|ZH|EN|SWITCH)__/);
   for (const [asset, type] of [
     ["app.js", /javascript/],
     ["styles.css", /text\/css/],
@@ -133,6 +142,9 @@ try {
     assert.equal(response.status, 200, asset);
     assert.match(response.headers.get("content-type") ?? "", type, asset);
     const bytes = Buffer.from(await response.arrayBuffer());
+    if (asset === "app.js") {
+      assert.match(bytes.toString("utf8"), /iphone-export-original\.jpg/);
+    }
     if (asset.endsWith(".jpg")) {
       assert.equal(bytes[0], 0xff);
       assert.equal(bytes[1], 0xd8);

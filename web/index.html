@@ -8,23 +8,37 @@
       content="ShutterCount — 上传一张相机直出原图（JPG/JPEG），读取机身型号、快门次数与拍摄时间。图片仅临时解析，不长期保存。"
     />
     <meta name="theme-color" content="#0c0d0f" />
+    <title>ShutterCount · 查看相机快门次数</title>
+    <!--SC_HEAD-->
+    <script>
+      if (!(window.__SC_LEAVING || (window.rfLang && window.rfLang.leaving))) {
+        var _hmt = _hmt || [];
+        (function () {
+          var hm = document.createElement("script");
+          hm.src = "https://hm.baidu.com/hm.js?f4b1d2fc4d60c37f898b469f83237dab";
+          var s = document.getElementsByTagName("script")[0];
+          s.parentNode.insertBefore(hm, s);
+        })();
+      }
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
-    <script src="/shell/topbar.js" defer></script>
-    <title>ShutterCount · 查看相机快门次数</title>
-<script>
-var _hmt = _hmt || [];
-(function() {
-  var hm = document.createElement("script");
-  hm.src = "https://hm.baidu.com/hm.js?f4b1d2fc4d60c37f898b469f83237dab";
-  var s = document.getElementsByTagName("script")[0]; 
-  s.parentNode.insertBefore(hm, s);
-})();
-</script>
+    <script src="/shell/topbar.js" defer data-tool="shutter"></script>
   </head>
   <body>
     <div class="upload-screen">
       <div class="upload-card">
+        <div class="card-top">
+          <a
+            id="lang-switch"
+            class="lang-switch"
+            href="__SC_SWITCH__"
+            hreflang="en"
+            lang="en"
+            title="Switch to English"
+            >EN</a
+          >
+        </div>
         <div class="brand-mark" aria-hidden="true">SC</div>
         <p class="eyebrow">ShutterCount</p>
         <h1>查看相机快门次数</h1>
@@ -32,7 +46,6 @@ var _hmt = _hmt || [];
           上传一张相机原图，读取机身与快门计数。
         </p>
 
-        <!-- Body section: swapped between upload / loading / success / fail / error -->
         <div id="stage">
           <div
             class="upload-dropzone"

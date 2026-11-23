@@ -20,6 +20,7 @@ const validResult = {
   model: "D70",
   capturedAt: null,
   note: null,
+  noteCode: null,
   shutterCount: 526,
   shutterSource: "Nikon:ShutterCount",
   approximate: false,
@@ -71,6 +72,24 @@ test("the shared decoder rejects malformed counts and strips undocumented fields
       rawExif: { serial: "private" },
     }),
     validResult
+  );
+  const privateCode = decodeParseResult({
+    ...validResult,
+    noteCode: "PRIVATE_note",
+  });
+  assert.equal(privateCode?.status, "ok");
+  assert.equal(
+    privateCode?.status === "ok" ? privateCode.noteCode : "bad",
+    null
+  );
+  assert.equal(JSON.stringify(privateCode).includes("PRIVATE"), false);
+  const coded = decodeParseResult({
+    ...validResult,
+    noteCode: "canon_image_count",
+  });
+  assert.equal(
+    coded?.status === "ok" ? coded.noteCode : "bad",
+    "canon_image_count"
   );
   assert.equal(decodeParseResult({ ...validResult, model: {} }), null);
   assert.equal(

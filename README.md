@@ -44,7 +44,7 @@ npm run build
 npm start
 ```
 
-Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` with HTTP 308.
+Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` with HTTP 308. English is <http://127.0.0.1:3020/shutter/en/>. `GET /shutter/en` redirects to `/shutter/en/`.
 
 `npm run dev:server` watches backend source with tsx. In a second terminal, `npm run dev:web` starts Vite and proxies `/api` to the default local backend at `/shutter/api`. Production startup uses compiled files and needs no development dependencies.
 
@@ -65,6 +65,16 @@ Open <http://127.0.0.1:3020/shutter/>. `GET /shutter` redirects to `/shutter/` w
 The default trusts only a loopback proxy, such as nginx on the same host. Set `TRUST_PROXY` for the actual proxy topology; trusting arbitrary clients can let them spoof `X-Forwarded-For` and bypass per-IP rate limits.
 
 The browser reads the effective byte limit through `GET /api/config`. Failed settings retrieval can be retried; uploads wait for valid settings. Invalid ports, paths, limits and proxy settings prevent startup.
+
+### Languages
+
+Chinese stays at `{BASE_PATH}/`. English is `{BASE_PATH}/en/`. The default mount is `/shutter/`, so the public pages are `/shutter/` and `/shutter/en/`. The same rule applies at `/` and at any other supported prefix, such as `/tools/counter/`. Language is the `en` segment immediately after that prefix. API, stylesheet, script, and guide-image URLs stay on the prefix and are not placed under `en/`.
+
+The shared contract is `window.rfLang` from [rende-site `src/shell/lang.ts`](https://github.com/rendeyuwei/rende-site/blob/64701ced2b3e495f8e5237148096a5a665e41c17/src/shell/lang.ts) (`v` 1). A page decides in this order: an `en/` URL is English and `?lang=zh` on an unprefixed URL is Chinese; otherwise the manual `rf-lang` preference in `localStorage` or, if storage throws, the `rf-lang` cookie; otherwise the first `zh*` or `en*` tag in `navigator.languages` (`zh-HK` and `zh-TW` are Chinese); otherwise English. Only the language switch writes the preference. An unprefixed page redirects to its `en/` page only when English was chosen and the page declares `<link rel="alternate" hreflang="en">`. English pages never redirect, so the decision cannot loop. Query and hash are kept.
+
+Both HTML documents set `lang`, a self canonical URL, and `hreflang` for `zh-CN`, `en`, and `x-default` (English). The decision script is inlined in `<head>` before analytics. When the contract's site base is this process's mount (`/shutter/` or `/`), its `enter()` runs. Other mounts use the same decision with mount-relative URLs, because the contract table does not know those prefixes. That head script also rewrites `place()` and `href()` on those mounts, so the shared bar can return from `{BASE_PATH}/en/` to Chinese. `/` and `/shutter/` keep the contract functions.
+
+The contract copied here still has `shutter.en: false`. Shutter pages already switch languages because they publish `hreflang`. The main site's English home and tool menu keep linking to Chinese `/shutter/` until `src/shell/lang.ts` sets that flag to `true` and the main site is deployed. This repository does not change that file or production.
 
 ## Tests
 
@@ -152,11 +162,12 @@ Success example (illustrative ID and photo data):
   "shutterSource": "Nikon:ShutterCount",
   "approximate": false,
   "note": null,
+  "noteCode": null,
   "capturedAt": "2024-05-01 12:34:56"
 }
 ```
 
-`fileName` is a sanitized display name, not a storage path. `approximate` and `note` explain counts that may differ from mechanical shutter actuations. Unavailable metadata is `null`; `no_shutter_field` retains available make/model/capture-time fields and has a null shutter count.
+`fileName` is a sanitized display name, not a storage path. `approximate` and `note` explain counts that may differ from mechanical shutter actuations. `note` stays the original Chinese sentence. `noteCode` is `canon_image_count`, `fuji_image_count`, or `null`, including when an older response omits it. The page translates a known code and otherwise shows `note`. Unavailable metadata is `null`; `no_shutter_field` retains available make/model/capture-time fields and has a null shutter count.
 
 Failure example, with the same ID in `X-Request-ID`:
 

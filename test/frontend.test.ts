@@ -93,6 +93,12 @@ class HarnessElement {
   setAttribute(name: string, value: string) {
     this.attributes[name] = String(value);
   }
+  set href(value: string) {
+    this.setAttribute("href", value);
+  }
+  get href() {
+    return this.attributes.href ?? "";
+  }
   addEventListener(type: string, listener: (event: FakeEvent) => unknown) {
     (this.listeners[type] ||= []).push(listener);
   }
@@ -149,22 +155,35 @@ const INITIAL_TIME = Date.parse("2026-10-10T00:00:00.000Z");
 function createHarness({
   fetch,
   settings,
+  pathname = "/shutter/",
+  search = "",
+  hash = "",
+  mount = "/shutter/",
+  storage = "ok",
 }: {
   fetch?: FakeFetch;
   settings?: () => FakeResponse | Promise<FakeResponse>;
+  pathname?: string;
+  search?: string;
+  hash?: string;
+  mount?: string;
+  storage?: "ok" | "blocked" | "cookie";
 } = {}) {
   const document = { activeElement: null } as FakeDocument;
   document.root = new HarnessElement("body", "", document);
   const intro = new HarnessElement("p", "", document);
   const stage = new HarnessElement("div", "", document);
   const fileInput = new HarnessElement("input", "", document);
-  document.root.append(intro, stage, fileInput);
+  const langSwitch = new HarnessElement("a", "EN", document);
+  document.root.append(intro, stage, fileInput, langSwitch);
   document.getElementById = (id) =>
     (
-      ({ intro, stage, "file-input": fileInput }) as Record<
-        string,
-        HarnessElement
-      >
+      ({
+        intro,
+        stage,
+        "file-input": fileInput,
+        "lang-switch": langSwitch,
+      }) as Record<string, HarnessElement>
     )[id];
   document.querySelector = (selector) =>
     document.getElementById(selector.slice(1));
@@ -189,11 +208,50 @@ function createHarness({
       if (timer.at <= now && timers.delete(id)) timer.fn();
     }
   };
+  let cookie = "";
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get() {
+      if (storage === "blocked") throw new Error("cookie blocked");
+      return cookie;
+    },
+    set(value: string) {
+      if (storage === "blocked") throw new Error("cookie blocked");
+      cookie = String(value);
+    },
+  });
   const calls: [string, FetchOptions][] = [];
+  const listeners: Record<string, (() => void)[]> = {};
+  const stored = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => {
+      if (storage !== "ok") throw new Error("storage blocked");
+      return stored.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => {
+      if (storage !== "ok") throw new Error("storage blocked");
+      stored.set(key, String(value));
+    },
+  };
+  const location = {
+    pathname,
+    search,
+    hash,
+    protocol: "http:",
+    replace(url: string) {
+      this.pathname = url;
+    },
+  };
   const context = vm.createContext({
     document,
-    window: { addEventListener() {} },
-    location: { search: "", hash: "" },
+    window: {
+      __SC_MOUNT: mount,
+      addEventListener(type: string, listener: () => void) {
+        (listeners[type] ||= []).push(listener);
+      },
+    },
+    location,
+    localStorage,
     navigator: {},
     URLSearchParams,
     AbortController,
@@ -213,7 +271,7 @@ function createHarness({
     },
     clearTimeout: (id: number) => timers.delete(id),
     fetch: async (...args: [string, FetchOptions]) => {
-      if (args[0] === "./api/config")
+      if (args[0] === `${mount}api/config`)
         return settings
           ? settings()
           : response({
@@ -255,6 +313,13 @@ function createHarness({
     intro,
     stage,
     fileInput,
+    langSwitch,
+    location,
+    stored,
+    cookie: () => cookie,
+    emit(type: string) {
+      for (const listener of listeners[type] || []) listener();
+    },
     calls,
     timers,
     all,
@@ -617,11 +682,11 @@ test("no_shutter_field shows the full guide and other states remove it", async (
   const image = missing.byClass("missing-shutter__image")[0];
   const zoom = missing.byClass("missing-shutter__zoom")[0];
   assert.equal(image?.tagName, "img");
-  assert.equal(image?.attributes.src, "./iphone-export-original.jpg");
+  assert.equal(image?.attributes.src, "/shutter/iphone-export-original.jpg");
   assert.equal(image?.attributes.width, "1206");
   assert.equal(image?.attributes.height, "1550");
   assert.equal(zoom?.tagName, "a");
-  assert.equal(zoom?.attributes.href, "./iphone-export-original.jpg");
+  assert.equal(zoom?.attributes.href, "/shutter/iphone-export-original.jpg");
   assert.equal(zoom?.attributes.target, "_blank");
   assert.equal(zoom?.textContent.includes("查看大图"), true);
   missing.actions.resetAndPick();
@@ -661,4 +726,159 @@ test("failed settings retrieval can be retried and effective limits replace defa
   await ui.upload();
   assert.match(ui.stage.textContent, /526/);
   assert.equal(checks, 2);
+});
+
+test("english pages keep their language through loading, success, failure, and reset", async () => {
+  let release = (_value: FakeResponse) => {};
+  const pending = new Promise<FakeResponse>((resolve) => {
+    release = resolve;
+  });
+  const ui = createHarness({
+    pathname: "/tools/counter/en/",
+    mount: "/tools/counter/",
+    hash: "#kept",
+    search: "?from=mail",
+    fetch: () => pending,
+  });
+  const running = ui.actions.handleFile({ name: "camera.jpg", size: 100 });
+  await ui.flush();
+  assert.match(ui.stage.textContent, /Reading the original photo/);
+  assert.match(ui.stage.textContent, /camera\.jpg · Please wait/);
+  assert.doesNotMatch(ui.stage.textContent, /正在解析/);
+  release(
+    response({ data: { status: "ok", shutterCount: 526, model: "NIKON D70" } })
+  );
+  await ui.finish(running);
+  assert.match(ui.stage.textContent, /526/);
+  assert.match(ui.stage.textContent, /Camera model/);
+  assert.match(ui.stage.textContent, /Shutter count/);
+  assert.match(ui.stage.textContent, /Check another/);
+  assert.doesNotMatch(ui.stage.textContent, /未能读取快门次数|机身型号/);
+  ui.actions.resetAndPick();
+  assert.match(ui.stage.textContent, /Click or drop an original photo here/);
+  assert.equal(ui.byClass("missing-shutter").length, 0);
+
+  const failed = createHarness({
+    pathname: "/tools/counter/en/index.html",
+    mount: "/tools/counter/",
+    fetch: () => response({ status: 500, invalidJson: true }),
+  });
+  await failed.upload();
+  assert.match(failed.stage.textContent, /Could not read the photo/);
+  assert.equal(failed.byClass("missing-shutter").length, 0);
+  failed.actions.resetAndPick();
+  assert.match(
+    failed.stage.textContent,
+    /Click or drop an original photo here/
+  );
+
+  const missing = createHarness({
+    pathname: "/en/",
+    mount: "/",
+    fetch: () =>
+      response({ data: { status: "no_shutter_field", model: "iPhone 15" } }),
+  });
+  await missing.upload();
+  assert.match(missing.stage.textContent, /Shutter count was not found/);
+  assert.match(missing.stage.textContent, /Export Unmodified Original/);
+  assert.match(missing.stage.textContent, /导出未修改的原片/);
+  assert.match(missing.stage.textContent, /View full image/);
+  const image = missing.byClass("missing-shutter__image")[0];
+  assert.equal(image?.attributes.src, "/iphone-export-original.jpg");
+  assert.equal(image?.attributes.width, "1206");
+  assert.equal(image?.attributes.height, "1550");
+  assert.match(image?.attributes.alt ?? "", /Chinese/);
+});
+
+test("result notes follow noteCode and keep the original note when the code is unknown", async () => {
+  const english = createHarness({
+    pathname: "/shutter/en/",
+    mount: "/shutter/",
+    fetch: () =>
+      response({
+        data: {
+          status: "ok",
+          shutterCount: 42,
+          approximate: true,
+          note: "该机型记录的是图像计数，格式化存储卡后可能归零，仅供参考。",
+          noteCode: "canon_image_count",
+        },
+      }),
+  });
+  await english.upload();
+  assert.match(english.stage.textContent, /Formatting the card can reset it/);
+  assert.doesNotMatch(english.stage.textContent, /格式化存储卡/);
+
+  const legacy = createHarness({
+    pathname: "/shutter/en/",
+    mount: "/shutter/",
+    fetch: () =>
+      response({
+        data: {
+          status: "ok",
+          shutterCount: 7,
+          approximate: true,
+          note: "该机型记录的是图像计数，格式化存储卡后可能归零，仅供参考。",
+          noteCode: "PRIVATE_future_code",
+        },
+      }),
+  });
+  await legacy.upload();
+  assert.match(legacy.stage.textContent, /格式化存储卡/);
+  assert.doesNotMatch(legacy.stage.textContent, /PRIVATE/);
+
+  const approximate = createHarness({
+    pathname: "/shutter/",
+    fetch: () =>
+      response({
+        data: { status: "ok", shutterCount: 9, approximate: true, note: null },
+      }),
+  });
+  await approximate.upload();
+  assert.match(approximate.stage.textContent, /该数值为近似值/);
+});
+
+test("only a manual switch persists, and a blocked store still changes the URL", async () => {
+  const ui = createHarness({
+    pathname: "/shutter/",
+    search: "?album=1",
+    hash: "#top",
+  });
+  assert.equal(ui.stored.size, 0);
+  assert.equal(ui.langSwitch.attributes.href, "/shutter/en/?album=1#top");
+  ui.location.hash = "#later";
+  ui.emit("hashchange");
+  assert.equal(ui.langSwitch.attributes.href, "/shutter/en/?album=1#later");
+  await ui.langSwitch.click();
+  assert.equal(ui.stored.get("rf-lang"), "en");
+  assert.equal(ui.cookie(), "");
+
+  const blocked = createHarness({
+    pathname: "/shutter/en/",
+    mount: "/shutter/",
+    storage: "blocked",
+    search: "?album=1",
+    hash: "#x",
+  });
+  assert.equal(blocked.langSwitch.textContent, "EN");
+  await blocked.langSwitch.click();
+  assert.equal(blocked.stored.size, 0);
+  assert.equal(blocked.cookie(), "");
+  assert.equal(
+    blocked.langSwitch.attributes.href,
+    "/shutter/?album=1&lang=zh#x"
+  );
+
+  const cookieOnly = createHarness({
+    pathname: "/tools/counter/",
+    mount: "/tools/counter/",
+    storage: "cookie",
+  });
+  await cookieOnly.langSwitch.click();
+  assert.equal(cookieOnly.stored.size, 0);
+  assert.match(
+    cookieOnly.cookie(),
+    /^rf-lang=en; Path=\/; Max-Age=31536000; SameSite=Lax$/
+  );
+  assert.equal(cookieOnly.langSwitch.attributes.href, "/tools/counter/en/");
 });

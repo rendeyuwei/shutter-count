@@ -1,8 +1,31 @@
+import {
+  hrefFor,
+  mountUrl,
+  normalizeMount,
+  placeInMount,
+  sameMount,
+} from "../shared/lang.js";
+import type { LangCode } from "../shared/lang.js";
 import { loadUploadSettings, classifyResponse } from "./api.js";
+import { COPY } from "./copy.js";
 import { createView } from "./render.js";
+import { browserPrefHost, writePref } from "./storage.js";
 import type { ParseOutcome } from "./types.js";
 import type { UploadSettings } from "../shared/protocol.js";
-const API_URL = "./api/parse";
+
+function readMount(): string {
+  const value = window.__SC_MOUNT;
+  if (typeof value !== "string" || !value.startsWith("/")) {
+    throw new Error("Missing shutter mount");
+  }
+  return normalizeMount(value);
+}
+
+const mount = readMount();
+const pageLang: LangCode = placeInMount(location.pathname, mount).lang;
+const copy = COPY[pageLang];
+const API_URL = mountUrl(mount, "api/parse");
+const CONFIG_URL = mountUrl(mount, "api/config");
 const FETCH_TIMEOUT_MS = 60_000;
 const MIN_LOADING_MS = 400;
 let uploadGeneration = 0;
@@ -20,14 +43,18 @@ const {
     void handleFile(file);
   },
   onReset: resetAndPick,
+  copy,
+  guideImage: mountUrl(mount, "iphone-export-original.jpg"),
 });
 let settingsPromise: Promise<UploadSettings | null> | null = null;
 function getUploadSettings(): Promise<UploadSettings | null> {
-  return (settingsPromise ??= loadUploadSettings().then((settings) => {
-    if (settings) setUploadLimit(settings.maxUploadMb);
-    else settingsPromise = null;
-    return settings;
-  }));
+  return (settingsPromise ??= loadUploadSettings(CONFIG_URL).then(
+    (settings) => {
+      if (settings) setUploadLimit(settings.maxUploadMb);
+      else settingsPromise = null;
+      return settings;
+    }
+  ));
 }
 void getUploadSettings();
 export async function handleFile(file: File) {
@@ -131,6 +158,7 @@ const DEMO_STATES: Record<string, () => void> = {
       capturedAt: "2025-11-03 14:22:08",
       approximate: false,
       note: null,
+      noteCode: null,
     }),
   fail: () =>
     renderFail({
@@ -146,7 +174,47 @@ const DEMO_STATES: Record<string, () => void> = {
 /* Init                                                                */
 /* ------------------------------------------------------------------ */
 
+function bindLanguageSwitch() {
+  const anchor = document.querySelector<HTMLAnchorElement>("#lang-switch");
+  if (!anchor) return;
+  const other: LangCode = pageLang === "en" ? "zh" : "en";
+  const sync = () => {
+    anchor.href = hrefFor(
+      other,
+      location.pathname,
+      mount,
+      location.search || "",
+      location.hash || ""
+    );
+  };
+  sync();
+  window.addEventListener("hashchange", sync);
+  anchor.addEventListener("click", () => {
+    writePref(browserPrefHost(), other);
+    sync();
+  });
+  const rf = window.rfLang;
+  if (
+    rf?.href &&
+    rf.place &&
+    !sameMount(rf.place(location.pathname).site.base, mount)
+  ) {
+    rf.href = (lang) =>
+      hrefFor(
+        lang,
+        location.pathname,
+        mount,
+        location.search || "",
+        location.hash || ""
+      );
+    const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
+    if (bar) bar.href = rf.href(other);
+  }
+  if (document.querySelector("a.rf-lang")) anchor.hidden = true;
+}
+
 function init() {
+  bindLanguageSwitch();
   // Never let the browser navigate when a file is dropped outside the zone.
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", (e) => e.preventDefault());

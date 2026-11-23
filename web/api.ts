@@ -2,9 +2,11 @@ import { decodeParseResult, decodeUploadSettings } from "../shared/protocol.js";
 import type { UploadSettings } from "../shared/protocol.js";
 import type { ParseOutcome } from "./types.js";
 
-export async function loadUploadSettings(): Promise<UploadSettings | null> {
+export async function loadUploadSettings(
+  configUrl = "./api/config"
+): Promise<UploadSettings | null> {
   try {
-    const response = await fetch("./api/config", {
+    const response = await fetch(configUrl, {
       signal: AbortSignal.timeout(5000),
       cache: "no-store",
     });

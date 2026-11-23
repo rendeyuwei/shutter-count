@@ -44,7 +44,7 @@ npm run build
 npm start
 ```
 
-打开 <http://127.0.0.1:3020/shutter/>。`GET /shutter` 会以 HTTP 308 跳转到 `/shutter/`。
+打开 <http://127.0.0.1:3020/shutter/>。`GET /shutter` 会以 HTTP 308 跳转到 `/shutter/`。英文页是 <http://127.0.0.1:3020/shutter/en/>。`GET /shutter/en` 会跳转到 `/shutter/en/`。
 
 `npm run dev:server` 使用 tsx 监听后端源码。在第二个终端运行 `npm run dev:web` 启动 Vite，将 `/api` 代理到默认本地后端的 `/shutter/api`。生产启动直接运行编译文件，不依赖开发依赖。
 
@@ -65,6 +65,16 @@ npm start
 默认仅信任本机回环代理，例如同机 nginx。应根据实际代理拓扑设置 `TRUST_PROXY`；信任任意客户端可能使其伪造 `X-Forwarded-For`，绕过每 IP 限流。
 
 浏览器通过 `GET /api/config` 读取有效上传限制，与服务端字节上限一致；配置读取失败时可重试，恢复前不会上传。非法端口、路径、大小和代理配置会阻止启动。
+
+### 语言
+
+中文留在 `{BASE_PATH}/`，英文是 `{BASE_PATH}/en/`。默认挂载是 `/shutter/`，公开地址就是 `/shutter/` 和 `/shutter/en/`。`/` 以及其他受支持前缀（例如 `/tools/counter/`）使用同一规则。语言只看紧跟该前缀的 `en` 段。接口、样式、脚本和说明图都留在前缀上，不放进 `en/`。
+
+共享契约是 [rende-site `src/shell/lang.ts`](https://github.com/rendeyuwei/rende-site/blob/64701ced2b3e495f8e5237148096a5a665e41c17/src/shell/lang.ts) 的 `window.rfLang`（`v` 为 1）。判定顺序：`en/` 是英文，无前缀 URL 上的 `?lang=zh` 是中文；否则使用手选偏好 `rf-lang`（先 `localStorage`，存储抛错时用同名 cookie）；否则取 `navigator.languages` 里第一个 `zh*` 或 `en*`（`zh-HK`、`zh-TW` 都算中文）；否则英文。只有点击语言开关才写入偏好。无前缀页面仅在选择了英文、且页面声明了 `<link rel="alternate" hreflang="en">` 时跳到对应 `en/`。英文页不会再跳，因此不会循环。查询字符串和 hash 会保留。
+
+两份 HTML 都设置 `lang`、指向自己的 canonical，以及 `zh-CN`、`en`、`x-default`（英文）的 `hreflang`。判定脚本内联在 `<head>` 中，位于统计脚本之前。契约里的站点前缀与当前进程挂载一致时（`/shutter/` 或 `/`）直接调用它的 `enter()`。其他挂载使用同一套判定，但 URL 按挂载计算，因为契约表不认识那些前缀。同一段 `<head>` 脚本也会改写这些挂载上的 `place()` 和 `href()`，共享顶栏才能从 `{BASE_PATH}/en/` 回到中文。`/` 和 `/shutter/` 仍使用契约自己的函数。
+
+这里复制的契约仍是 `shutter.en: false`。快门页面自己已经声明 `hreflang`，所以可以切换语言。主站英文首页和工具菜单在 `src/shell/lang.ts` 把该标志改为 `true` 并重新发布之前，仍会链到中文 `/shutter/`。本仓库不修改那个文件，也不改生产环境。
 
 ## 测试
 
@@ -152,11 +162,12 @@ curl -i \
   "shutterSource": "Nikon:ShutterCount",
   "approximate": false,
   "note": null,
+  "noteCode": null,
   "capturedAt": "2024-05-01 12:34:56"
 }
 ```
 
-`fileName` 是清理后的展示名称，不是存储路径。`approximate` 和 `note` 说明可能与机械快门动作次数不同的计数。缺失元数据为 `null`；`no_shutter_field` 会保留可读到的品牌、型号与拍摄时间，快门次数为 null。
+`fileName` 是清理后的展示名称，不是存储路径。`approximate` 和 `note` 说明可能与机械快门动作次数不同的计数。`note` 保持原来的中文句子。`noteCode` 为 `canon_image_count`、`fuji_image_count` 或 `null`；旧响应没有该字段时也按 `null` 处理。页面会翻译已知代码，否则显示 `note`。缺失元数据为 `null`；`no_shutter_field` 会保留可读到的品牌、型号与拍摄时间，快门次数为 null。
 
 失败示例，响应头 `X-Request-ID` 与 JSON 中的 ID 相同：
 
