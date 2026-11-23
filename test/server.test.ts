@@ -146,6 +146,10 @@ test("english pages keep query, heads, and mount-rooted assets", async () => {
     assert.match(page.body, /hreflang="en"/);
     assert.match(page.body, /hreflang="zh-CN"/);
     assert.match(page.body, /hreflang="x-default"/);
+    assert.match(
+      page.body,
+      new RegExp(`<meta name="rf-mount" content="${prefix}/" />`)
+    );
     const zh = await app.inject({ method: "GET", url: `${prefix}/` });
     assert.match(zh.body, /<html lang="zh-CN"/);
     assert.match(zh.body, /查看相机快门次数/);
@@ -247,6 +251,11 @@ test("built browser assets resolve under root and custom mounts", async () => {
     const page = await app.inject({ method: "GET", url: prefix + "/" });
     assert.equal(page.statusCode, 200);
     const mount = `${prefix}/`;
+    assert.match(
+      page.body,
+      new RegExp(`<meta name="rf-mount" content="${mount}" />`)
+    );
+    assert.match(page.body, /data-tool="shutter"/);
     for (const asset of ["favicon.svg", "styles.css", "app.js"]) {
       assert.match(
         page.body,

@@ -231,11 +231,12 @@ test("automatic enter redirects without asking storage to store a preference", (
   assert.equal(contractRan, true);
 });
 
-test("the shared contract still misreads a custom mount, and this app does not replace it", async () => {
+test("the inlined v1 contract still misreads a custom mount, and this app does not replace it", async () => {
   const source = await fs.readFile(
     new URL("web/vendor/rf-lang.js", root),
     "utf8"
   );
+  assert.match(source, /const V = 1/);
   const english = contractWindow(source, {
     pathname: "/tools/counter/en/",
     search: "?album=1",
@@ -254,6 +255,8 @@ test("the shared contract still misreads a custom mount, and this app does not r
   assert.doesNotMatch(enter, /rf\.href\s*=/);
   assert.doesNotMatch(app, /rf\.place\s*=/);
   assert.doesNotMatch(app, /rf\.href\s*=/);
+  assert.doesNotMatch(app, /barFollowsPage/);
+  assert.match(app, /new Event\("rf:locale"\)/);
 });
 
 function contractWindow(

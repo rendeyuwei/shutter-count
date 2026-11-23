@@ -5,8 +5,8 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { buildApp } from "../../src/app.js";
 import { GUIDE } from "../../web/guide.js";
 
-// Real shell from rende-site 64701ced2b3e495f8e5237148096a5a665e41c17.
-// Not a stand-in: these are the bytes that commit published.
+// Built from rende-site 09687c3671464063614a06b10d353ba701d6468f.
+// These are that commit's dist/shell bytes, not a handwritten bar.
 const shellJs = await fs.readFile(
   new URL("../fixtures/shell/topbar.js", import.meta.url)
 );
@@ -21,8 +21,8 @@ const canon = await fs.readFile(
 );
 
 test(
-  "the real shared bar keeps a result, its switch, history, and mount assets",
-  { timeout: 120_000 },
+  "the v2 shell refreshes the whole bar without a second navigation",
+  { timeout: 180_000 },
   async (t) => {
     const browser = await chromium.launch(
       process.env.CHROME_PATH
@@ -33,21 +33,23 @@ test(
 
     for (const basePath of ["/", "/shutter", "/tools/counter"]) {
       await t.test(
-        `${basePath} result survives repeated bar toggles`,
+        `${basePath} toggles the real bar on every result`,
         async () => {
           const app = buildApp({ port: 0, basePath, maxUploadMb: 2.5 });
           t.after(() => app.close());
           const origin = await app.listen({ port: 0, host: "127.0.0.1" });
           const mount = basePath === "/" ? "/" : `${basePath}/`;
           const context = await browser.newContext({ locale: "zh-CN" });
+          await context.addInitScript(countListeners);
           await serveShell(context, origin);
           const page = await context.newPage();
-          page.on("pageerror", (error) => {
-            throw error;
-          });
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(String(error)));
           let posts = 0;
+          let shellScripts = 0;
           page.on("request", (request) => {
             if (request.method() === "POST") posts += 1;
+            if (request.url().includes("/shell/topbar.js")) shellScripts += 1;
           });
           await page.goto(`${origin}${mount}en/`, {
             waitUntil: "domcontentloaded",
@@ -55,21 +57,21 @@ test(
           await page.locator("a.rf-lang").waitFor();
           await page.evaluate(() => {
             const rf = window.rfLang;
-            (
-              window as unknown as { __rfPlace?: unknown; __rfHref?: unknown }
-            ).__rfPlace = rf?.place;
-            (window as unknown as { __rfHref?: unknown }).__rfHref = rf?.href;
-            (window as unknown as { __scStay?: number }).__scStay = 1;
+            const mark = window as unknown as {
+              __rfPlace?: unknown;
+              __rfHref?: unknown;
+              __scStay?: number;
+              __scBar?: Element | null;
+            };
+            mark.__rfPlace = rf?.place;
+            mark.__rfHref = rf?.href;
+            mark.__scStay = 1;
+            mark.__scBar = document.querySelector("header.rf-bar");
           });
-          const contractOwns = mount === "/" || mount === "/shutter/";
-          if (!contractOwns) {
-            assert.equal(await page.locator("a.rf-lang").innerText(), "EN");
-            assert.equal(
-              await page.locator("#lang-switch").getAttribute("hidden"),
-              null
-            );
-          }
+          await expectChrome(page, origin, mount, "en", true);
+          assert.equal(await pref(page), null);
           await expectAssets(page, origin, mount);
+
           await page.locator("#file-input").setInputFiles({
             name: "camera.jpg",
             mimeType: "image/jpeg",
@@ -80,66 +82,43 @@ test(
             .waitFor();
           await expectGuide(page, origin, mount, GUIDE.en);
           const posted = posts;
-
-          if (!contractOwns) {
-            assert.equal(
-              await page.locator("#lang-switch").getAttribute("hidden"),
-              null
+          const listeners = await listenerSnapshot(page);
+          let current: "en" | "zh" = "en";
+          for (let step = 0; step < 5; step += 1) {
+            current = current === "en" ? "zh" : "en";
+            await clickSwitch(page);
+            await settled(page, current);
+            await expectChrome(page, origin, mount, current, true);
+            await expectGuide(
+              page,
+              origin,
+              mount,
+              current === "en" ? GUIDE.en : GUIDE.zh
             );
+            await expectAssets(page, origin, mount);
+            assert.equal(await focusedSwitch(page), true);
+            assert.equal(posts, posted);
+            assert.equal(await stayed(page), 1);
           }
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "zh-CN"
-          );
-          assert.equal(await stayed(page), 1);
-          assert.equal(posts, posted);
-          assert.match(
-            await page.locator("#stage").innerText(),
-            /未能读取快门次数/
-          );
-          await expectGuide(page, origin, mount, GUIDE.zh);
-          await expectAssets(page, origin, mount);
-          assert.equal(await page.locator("a.rf-lang").innerText(), "EN");
-          assert.equal(
-            await page.locator("a.rf-home .rf-t").innerText(),
-            contractOwns ? "Back to home" : "回到主站"
-          );
+          assert.equal(current, "zh");
+          assert.equal(await pref(page), "zh");
+          assert.equal(await listenerSnapshot(page), listeners);
+          assert.equal(shellScripts, 1);
+          assert.deepEqual(errors, []);
 
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "en"
-          );
-          assert.equal(await stayed(page), 1);
-          assert.equal(posts, posted);
-          assert.match(
-            await page.locator("#stage").innerText(),
-            /English illustration/
-          );
-          await expectGuide(page, origin, mount, GUIDE.en);
-          await expectAssets(page, origin, mount);
-          assert.equal(await page.locator("a.rf-lang").innerText(), "中文");
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "zh-CN"
-          );
           await page.goBack();
-          await page.waitForFunction(
-            () => document.documentElement.lang === "en"
-          );
+          await settled(page, "en");
+          await expectChrome(page, origin, mount, "en", true);
           await expectGuide(page, origin, mount, GUIDE.en);
-          await expectAssets(page, origin, mount);
-          assert.equal(await page.locator("a.rf-lang").innerText(), "中文");
+          assert.equal(await pref(page), "zh");
           await page.goForward();
-          await page.waitForFunction(
-            () => document.documentElement.lang === "zh-CN"
-          );
-          await expectGuide(page, origin, mount, GUIDE.zh);
-          assert.equal(await page.locator("a.rf-lang").innerText(), "EN");
-          await page.goBack();
-          await page.waitForFunction(
-            () => document.documentElement.lang === "en"
-          );
+          await settled(page, "zh");
+          await expectChrome(page, origin, mount, "zh", true);
+          assert.equal(await pref(page), "zh");
+          assert.equal(posts, posted);
 
+          await page.goBack();
+          await settled(page, "en");
           await page.locator("#file-input").setInputFiles({
             name: "camera.jpg",
             mimeType: "image/jpeg",
@@ -147,19 +126,14 @@ test(
           });
           await page.getByRole("button", { name: "Check another" }).waitFor();
           assert.equal(posts, posted + 1);
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "zh-CN"
-          );
+          await clickSwitch(page);
+          await settled(page, "zh");
           assert.match(await page.locator("#stage").innerText(), /526/);
           assert.match(await page.locator("#stage").innerText(), /再查一张/);
+          await expectChrome(page, origin, mount, "zh", true);
           assert.equal(posts, posted + 1);
-          assert.equal(await stayed(page), 1);
-          await expectAssets(page, origin, mount);
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "en"
-          );
+          await clickSwitch(page);
+          await settled(page, "en");
 
           await page.locator("#file-input").setInputFiles({
             name: "notes.png",
@@ -168,16 +142,16 @@ test(
           });
           await page.getByText("This file could not be read").waitFor();
           assert.equal(posts, posted + 1);
-          await clickVisibleSwitch(page);
-          await page.waitForFunction(
-            () => document.documentElement.lang === "zh-CN"
-          );
+          await clickSwitch(page);
+          await settled(page, "zh");
           assert.match(
             await page.locator("#stage").innerText(),
             /无法解析该文件/
           );
-          assert.equal(posts, posted + 1);
+          await expectChrome(page, origin, mount, "zh", true);
           await expectAssets(page, origin, mount);
+          assert.equal(posts, posted + 1);
+          assert.equal(await stayed(page), 1);
           assert.equal(
             await page.evaluate(() => {
               const rf = window.rfLang;
@@ -189,72 +163,107 @@ test(
             }),
             true
           );
+
+          await context.setOffline(true);
+          await clickSwitch(page);
+          await settled(page, "en");
+          await expectChrome(page, origin, mount, "en", true);
+          assert.equal(shellScripts, 1);
+          assert.equal(await stayed(page), 1);
+          assert.deepEqual(errors, []);
           await context.close();
         }
       );
     }
 
-    await t.test(
-      "blocked storage still toggles the real /shutter bar",
-      async () => {
-        const app = buildApp({
-          port: 0,
-          basePath: "/shutter",
-          maxUploadMb: 2.5,
+    await t.test("both blocked stores still refresh the real bar", async () => {
+      const app = buildApp({ port: 0, basePath: "/shutter", maxUploadMb: 2.5 });
+      t.after(() => app.close());
+      const origin = await app.listen({ port: 0, host: "127.0.0.1" });
+      const context = await browser.newContext({ locale: "zh-CN" });
+      await context.addInitScript(() => {
+        Object.defineProperty(window, "localStorage", {
+          configurable: true,
+          get() {
+            throw new Error("blocked");
+          },
         });
-        t.after(() => app.close());
-        const origin = await app.listen({ port: 0, host: "127.0.0.1" });
-        const context = await browser.newContext({ locale: "zh-CN" });
-        await context.addInitScript(() => {
-          Object.defineProperty(window, "localStorage", {
-            configurable: true,
-            get() {
-              throw new Error("blocked");
-            },
-          });
-          Object.defineProperty(document, "cookie", {
-            configurable: true,
-            get() {
-              return "";
-            },
-            set() {
-              throw new Error("blocked");
-            },
-          });
+        Object.defineProperty(document, "cookie", {
+          configurable: true,
+          get() {
+            return "";
+          },
+          set() {
+            throw new Error("blocked");
+          },
         });
-        await serveShell(context, origin);
-        const page = await context.newPage();
-        page.on("pageerror", (error) => {
-          throw error;
-        });
-        await page.goto(`${origin}/shutter/en/`, {
-          waitUntil: "domcontentloaded",
-        });
-        await page.locator("#file-input").setInputFiles({
-          name: "camera.jpg",
-          mimeType: "image/jpeg",
-          buffer: canon,
-        });
-        await page
-          .getByRole("heading", { name: "Shutter count was not found" })
-          .waitFor();
-        await page.locator("a.rf-lang").click();
-        await page.waitForFunction(
-          () => document.documentElement.lang === "zh-CN"
+      });
+      await serveShell(context, origin);
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(String(error)));
+      await page.goto(`${origin}/shutter/en/`, {
+        waitUntil: "domcontentloaded",
+      });
+      await page.locator("#file-input").setInputFiles({
+        name: "camera.jpg",
+        mimeType: "image/jpeg",
+        buffer: canon,
+      });
+      await page
+        .getByRole("heading", { name: "Shutter count was not found" })
+        .waitFor();
+      await page.evaluate(() => {
+        (window as unknown as { __scBar?: Element | null }).__scBar =
+          document.querySelector("header.rf-bar");
+      });
+      let current: "en" | "zh" = "en";
+      for (let step = 0; step < 5; step += 1) {
+        current = current === "en" ? "zh" : "en";
+        await clickSwitch(page);
+        await settled(page, current);
+        await expectChrome(page, origin, "/shutter/", current, false);
+        await expectGuide(
+          page,
+          origin,
+          "/shutter/",
+          current === "en" ? GUIDE.en : GUIDE.zh
         );
-        assert.equal(await page.locator("a.rf-lang").innerText(), "EN");
-        await expectGuide(page, origin, "/shutter/", GUIDE.zh);
-        await page.locator("a.rf-lang").click();
-        await page.waitForFunction(
-          () => document.documentElement.lang === "en"
-        );
-        assert.equal(await page.locator("a.rf-lang").innerText(), "中文");
-        await expectAssets(page, origin, "/shutter/");
-        await context.close();
       }
-    );
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
   }
 );
+
+function countListeners() {
+  const counts: Record<string, number> = {};
+  const mark = (owner: string, type: string) => {
+    const key = `${owner}:${type}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+  };
+  const docAdd = Document.prototype.addEventListener;
+  Document.prototype.addEventListener = function (
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions
+  ) {
+    mark("document", type);
+    return docAdd.call(this, type, listener, options);
+  };
+  const winAdd = Window.prototype.addEventListener;
+  Window.prototype.addEventListener = function (
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions
+  ) {
+    mark("window", type);
+    return winAdd.call(this, type, listener, options);
+  };
+  (
+    window as unknown as { __scListeners?: Record<string, number> }
+  ).__scListeners = counts;
+}
 
 async function serveShell(context: BrowserContext, origin: string) {
   await context.route("**/*", async (route) => {
@@ -278,17 +287,120 @@ async function serveShell(context: BrowserContext, origin: string) {
   );
 }
 
-async function clickVisibleSwitch(page: Page) {
-  const inline = page.locator("#lang-switch");
-  const hidden = await inline.getAttribute("hidden");
-  const target = hidden === null ? inline : page.locator("a.rf-lang");
-  await target.click();
+async function clickSwitch(page: Page) {
+  await page.evaluate(() => {
+    const link = document.querySelector("a.rf-lang");
+    if (!(link instanceof HTMLAnchorElement)) throw new Error("missing switch");
+    link.focus();
+    link.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true })
+    );
+  });
+}
+
+async function settled(page: Page, lang: "en" | "zh") {
+  const html = lang === "en" ? "en" : "zh-CN";
+  await page.waitForFunction(
+    (expected) => document.documentElement.lang === expected,
+    html
+  );
 }
 
 async function stayed(page: Page) {
   return page.evaluate(
     () => (window as unknown as { __scStay?: number }).__scStay
   );
+}
+
+async function pref(page: Page) {
+  return page.evaluate(() => localStorage.getItem("rf-lang"));
+}
+
+async function focusedSwitch(page: Page) {
+  return page.evaluate(
+    () => document.activeElement === document.querySelector("a.rf-lang")
+  );
+}
+
+async function listenerSnapshot(page: Page) {
+  return page.evaluate(() =>
+    JSON.stringify(
+      (window as unknown as { __scListeners?: Record<string, number> })
+        .__scListeners
+    )
+  );
+}
+
+async function expectChrome(
+  page: Page,
+  origin: string,
+  mount: string,
+  lang: "en" | "zh",
+  persisted: boolean
+) {
+  const url = new URL(page.url());
+  const onEn = lang === "en";
+  assert.equal(url.pathname, onEn ? `${mount}en/` : mount);
+  assert.equal(url.search, onEn ? "" : "?lang=zh");
+  const home = onEn ? "/en/" : persisted ? "/" : "/?lang=zh";
+  const tool = onEn || persisted ? "/shutter/" : "/shutter/?lang=zh";
+  const info = await page.evaluate(() => {
+    const menu = [...document.querySelectorAll("#rf-menu a")].map(
+      (anchor) => (anchor as HTMLAnchorElement).href
+    );
+    const mark = window as unknown as { __scBar?: Element | null };
+    return {
+      html: document.documentElement.lang,
+      switchText: document.querySelector("a.rf-lang")?.textContent ?? "",
+      switchHref: (document.querySelector("a.rf-lang") as HTMLAnchorElement)
+        .href,
+      back: document.querySelector("a.rf-home .rf-t")?.textContent ?? "",
+      backHref: (document.querySelector("a.rf-home") as HTMLAnchorElement).href,
+      tool: document.querySelector(".rf-cur")?.textContent ?? "",
+      shutterHref: (
+        document.querySelector(
+          "#rf-menu a[aria-current='page']"
+        ) as HTMLAnchorElement
+      ).href,
+      menu,
+      v: window.rfLang?.v ?? 0,
+      mountMeta:
+        document
+          .querySelector('meta[name="rf-mount"]')
+          ?.getAttribute("content") ?? "",
+      inlineHidden: document
+        .querySelector("#lang-switch")
+        ?.hasAttribute("hidden"),
+      bars: document.querySelectorAll("header.rf-bar").length,
+      scripts: document.querySelectorAll('script[src="/shell/topbar.js"]')
+        .length,
+      sameBar: document.querySelector("header.rf-bar") === mark.__scBar,
+    };
+  });
+  assert.equal(info.html, onEn ? "en" : "zh-CN");
+  assert.equal(info.switchText, onEn ? "中文" : "EN");
+  assert.equal(
+    info.switchHref,
+    `${origin}${onEn ? `${mount}?lang=zh` : `${mount}en/`}`
+  );
+  assert.equal(info.back, onEn ? "Back to home" : "回到主站");
+  assert.equal(info.backHref, `${origin}${home}`);
+  assert.equal(info.tool, onEn ? "ShutterCount" : "快门计数");
+  assert.equal(info.shutterHref, `${origin}${tool}`);
+  assert.equal(
+    info.menu.includes(
+      `${origin}/easypic/${onEn || persisted ? "" : "?lang=zh"}`
+    ),
+    true
+  );
+  assert.equal(info.menu.includes(`${origin}/shutter/en/`), false);
+  assert.equal(info.menu.includes(`${origin}/en/shutter/`), false);
+  assert.equal(info.v, 2);
+  assert.equal(info.mountMeta, mount);
+  assert.equal(info.inlineHidden, true);
+  assert.equal(info.bars, 1);
+  assert.equal(info.scripts, 1);
+  assert.equal(info.sameBar, true);
 }
 
 async function expectAssets(page: Page, origin: string, mount: string) {

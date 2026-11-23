@@ -261,6 +261,7 @@ export function createView(viewActions: {
     mode = "result";
     paint = () => drawSuccess(data);
     paint();
+    introEl.focus();
   }
 
   function drawSuccess(data: SuccessView) {
@@ -284,7 +285,6 @@ export function createView(viewActions: {
       buildResultCard(rows, copy.resultLabel),
       buildActions(copy.again, "primary")
     );
-    introEl.focus();
   }
 
   function buildMissingShutterHelp() {
@@ -345,6 +345,7 @@ export function createView(viewActions: {
     mode = "result";
     paint = () => drawFail(data);
     paint();
+    introEl.focus();
   }
 
   function drawFail(data: Partial<MetadataView>) {
@@ -362,13 +363,13 @@ export function createView(viewActions: {
 
     nodes.push(buildActions(copy.reupload, "secondary"));
     setStage(...nodes);
-    introEl.focus();
   }
 
   function renderError(kind: ErrorKind, fileName?: string | null) {
     mode = "result";
     paint = () => drawError(kind, fileName);
     paint();
+    introEl.focus();
   }
 
   function drawError(kind: ErrorKind, fileName?: string | null) {
@@ -388,7 +389,6 @@ export function createView(viewActions: {
       buildActions(copy.reupload, "secondary")
     );
     setStage(...nodes);
-    introEl.focus();
   }
 
   return {

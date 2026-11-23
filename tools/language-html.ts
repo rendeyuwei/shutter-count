@@ -60,6 +60,7 @@ export function languagePages(): Plugin {
         '<link rel="alternate" hreflang="zh-CN" href="__SC_ZH__" />',
         '<link rel="alternate" hreflang="en" href="__SC_EN__" />',
         '<link rel="alternate" hreflang="x-default" href="__SC_EN__" />',
+        '<meta name="rf-mount" content="__SC_MOUNT__" />',
         '<meta name="sc-mount" content="__SC_MOUNT__" />',
         `<script>${langJs}</script>`,
         `<script data-sc-enter>${enter}</script>`,

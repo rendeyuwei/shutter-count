@@ -201,12 +201,13 @@ function paintSwitch(anchor: HTMLAnchorElement, next: LangCode) {
   anchor.href = languageUrl(next);
 }
 
-// True after the shared switch initially offered this page's other language.
-// Later paints keep that one anchor current. The rest of the bar waits for
-// the shell's own refresh. rfLang.place and rfLang.href are not replaced.
-let barFollowsPage = false;
+// The loaded shell is v2 and refreshes its own bar on "rf:locale".
+// A missing shell, or the inlined v1 copy, keeps the page switch.
+function shellCanRefresh(): boolean {
+  return (window.rfLang?.v ?? 0) >= 2;
+}
 
-function syncSwitch() {
+function syncPage() {
   const copy = COPY[lang];
   const next: LangCode = lang === "en" ? "zh" : "en";
   document.documentElement.lang = copy.htmlLang;
@@ -222,13 +223,20 @@ function syncSwitch() {
   const canonicalHref = alternate?.getAttribute("href");
   if (canonical && canonicalHref) canonical.setAttribute("href", canonicalHref);
   const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
-  const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
-  if (inline) paintSwitch(inline, next);
-  if (bar && (barFollowsPage || offeredLang(bar) === next)) {
-    barFollowsPage = true;
-    paintSwitch(bar, next);
-  }
-  if (inline) inline.hidden = Boolean(bar) && barFollowsPage;
+  if (!inline) return;
+  paintSwitch(inline, next);
+  inline.hidden =
+    shellCanRefresh() && Boolean(document.querySelector("a.rf-lang"));
+}
+
+function remember(next: LangCode) {
+  if (shellCanRefresh()) window.rfLang?.choose(next);
+  else writePref(browserPrefHost(), next);
+}
+
+function publishLocale() {
+  if (!shellCanRefresh()) return;
+  document.dispatchEvent(new Event("rf:locale"));
 }
 
 function readUrlLang(): LangCode {
@@ -243,9 +251,9 @@ function onSwitchClick(event: Event, anchor: HTMLAnchorElement) {
     event.preventDefault();
     return;
   }
-  writePref(browserPrefHost(), offered);
   const url = languageUrl(offered);
   if (!view.showingResult()) {
+    remember(offered);
     if ((anchor.getAttribute("href") || "") !== url) {
       event.preventDefault();
       location.assign(url);
@@ -256,21 +264,36 @@ function onSwitchClick(event: Event, anchor: HTMLAnchorElement) {
   lang = offered;
   history.pushState(null, "", url);
   view.useLocale(COPY[lang], guideFor(mount, lang));
-  syncSwitch();
+  syncPage();
+  remember(offered);
+  publishLocale();
+}
+
+function barAnchor(event: Event): HTMLAnchorElement | null {
+  const node = event.target;
+  const element =
+    node instanceof Element
+      ? node
+      : node instanceof Node
+        ? node.parentElement
+        : null;
+  const anchor = element?.closest("a.rf-lang");
+  return anchor instanceof HTMLAnchorElement ? anchor : null;
 }
 
 function bindLanguageSwitch() {
   const inline = document.querySelector<HTMLAnchorElement>("#lang-switch");
-  const bar = document.querySelector<HTMLAnchorElement>("a.rf-lang");
-  syncSwitch();
-  for (const anchor of [inline, bar]) {
-    anchor?.addEventListener("click", (event) => onSwitchClick(event, anchor));
-  }
-  window.addEventListener("hashchange", syncSwitch);
+  syncPage();
+  inline?.addEventListener("click", (event) => onSwitchClick(event, inline));
+  document.addEventListener?.("click", (event) => {
+    const anchor = barAnchor(event);
+    if (anchor) onSwitchClick(event, anchor);
+  });
+  window.addEventListener("hashchange", syncPage);
   window.addEventListener("popstate", () => {
     lang = readUrlLang();
     view.useLocale(COPY[lang], guideFor(mount, lang));
-    syncSwitch();
+    syncPage();
   });
 }
 
