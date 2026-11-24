@@ -5,13 +5,23 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { buildApp } from "../../src/app.js";
 import { GUIDE } from "../../web/guide.js";
 
-// Built from rende-site 09687c3671464063614a06b10d353ba701d6468f.
-// These are that commit's dist/shell bytes, not a handwritten bar.
+// Exact dist/shell bytes from rende-site fdaa701bbf2736ee2874cfe5456bd25d941145f6.
+// The page pins these names. Tests never request the public hash URLs.
+const SHELL_JS =
+  "/shell/topbar.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b.js";
+const SHELL_CSS =
+  "/shell/topbar.918f2c1a3eaa24581dfb11b360b323fa925b5a2548108b6ad5d8bd98ff3cc23b.css";
 const shellJs = await fs.readFile(
-  new URL("../fixtures/shell/topbar.js", import.meta.url)
+  new URL(
+    `../fixtures/shell/${SHELL_JS.slice("/shell/".length)}`,
+    import.meta.url
+  )
 );
 const shellCss = await fs.readFile(
-  new URL("../fixtures/shell/topbar.css", import.meta.url)
+  new URL(
+    `../fixtures/shell/${SHELL_CSS.slice("/shell/".length)}`,
+    import.meta.url
+  )
 );
 const nikon = await fs.readFile(
   new URL("../fixtures/NikonD70.jpg", import.meta.url)
@@ -49,7 +59,7 @@ test(
           let shellScripts = 0;
           page.on("request", (request) => {
             if (request.method() === "POST") posts += 1;
-            if (request.url().includes("/shell/topbar.js")) shellScripts += 1;
+            if (new URL(request.url()).pathname === SHELL_JS) shellScripts += 1;
           });
           await page.goto(`${origin}${mount}en/`, {
             waitUntil: "domcontentloaded",
@@ -271,14 +281,14 @@ async function serveShell(context: BrowserContext, origin: string) {
     if (requested.origin === origin) await route.continue();
     else await route.abort("blockedbyclient");
   });
-  await context.route("**/shell/topbar.js", (route) =>
+  await context.route(`**${SHELL_JS}`, (route) =>
     route.fulfill({
       status: 200,
       contentType: "text/javascript; charset=utf-8",
       body: shellJs,
     })
   );
-  await context.route("**/shell/topbar.css", (route) =>
+  await context.route(`**${SHELL_CSS}`, (route) =>
     route.fulfill({
       status: 200,
       contentType: "text/css; charset=utf-8",
@@ -343,7 +353,16 @@ async function expectChrome(
   assert.equal(url.pathname, onEn ? `${mount}en/` : mount);
   assert.equal(url.search, onEn ? "" : "?lang=zh");
   const home = onEn ? "/en/" : persisted ? "/" : "/?lang=zh";
-  const tool = onEn || persisted ? "/shutter/" : "/shutter/?lang=zh";
+  const tool = onEn
+    ? "/shutter/en/"
+    : persisted
+      ? "/shutter/"
+      : "/shutter/?lang=zh";
+  const easy = onEn
+    ? "/easypic/en/"
+    : persisted
+      ? "/easypic/"
+      : "/easypic/?lang=zh";
   const info = await page.evaluate(() => {
     const menu = [...document.querySelectorAll("#rf-menu a")].map(
       (anchor) => (anchor as HTMLAnchorElement).href
@@ -372,7 +391,10 @@ async function expectChrome(
         .querySelector("#lang-switch")
         ?.hasAttribute("hidden"),
       bars: document.querySelectorAll("header.rf-bar").length,
-      scripts: document.querySelectorAll('script[src="/shell/topbar.js"]')
+      scripts: document.querySelectorAll(
+        'script[src="/shell/topbar.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b.js"]'
+      ).length,
+      legacy: document.querySelectorAll('script[src="/shell/topbar.js"]')
         .length,
       sameBar: document.querySelector("header.rf-bar") === mark.__scBar,
     };
@@ -387,19 +409,15 @@ async function expectChrome(
   assert.equal(info.backHref, `${origin}${home}`);
   assert.equal(info.tool, onEn ? "ShutterCount" : "快门计数");
   assert.equal(info.shutterHref, `${origin}${tool}`);
-  assert.equal(
-    info.menu.includes(
-      `${origin}/easypic/${onEn || persisted ? "" : "?lang=zh"}`
-    ),
-    true
-  );
-  assert.equal(info.menu.includes(`${origin}/shutter/en/`), false);
+  assert.equal(info.menu.includes(`${origin}${easy}`), true);
+  assert.equal(info.menu.includes(`${origin}/shutter/en/`), onEn);
   assert.equal(info.menu.includes(`${origin}/en/shutter/`), false);
   assert.equal(info.v, 2);
   assert.equal(info.mountMeta, mount);
   assert.equal(info.inlineHidden, true);
   assert.equal(info.bars, 1);
   assert.equal(info.scripts, 1);
+  assert.equal(info.legacy, 0);
   assert.equal(info.sameBar, true);
 }
 
