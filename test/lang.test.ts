@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import vm from "node:vm";
 import {
@@ -257,6 +258,87 @@ test("the inlined v1 contract still misreads a custom mount, and this app does n
   assert.doesNotMatch(app, /rf\.href\s*=/);
   assert.doesNotMatch(app, /barFollowsPage/);
   assert.match(app, /new Event\("rf:locale"\)/);
+});
+
+test("the pinned lang matches this app's decision, so the inlined v1 copy stays", async () => {
+  const vendor = await fs.readFile(
+    new URL("web/vendor/rf-lang.js", root),
+    "utf8"
+  );
+  const pinned = await fs.readFile(
+    new URL(
+      "test/fixtures/shell/lang.3effebca35bf58244e77657ead34de9f6afb4416ffdc3ba5a0bbcd4f2933c70d.js",
+      root
+    ),
+    "utf8"
+  );
+  assert.match(vendor, /const V = 1/);
+  assert.match(pinned, /const V=2/);
+  assert.equal(Buffer.byteLength(pinned), 3755);
+  assert.equal(
+    createHash("sha256").update(pinned).digest("hex"),
+    "3effebca35bf58244e77657ead34de9f6afb4416ffdc3ba5a0bbcd4f2933c70d"
+  );
+  const topbar = await fs.readFile(
+    new URL(
+      "test/fixtures/shell/topbar.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b.js",
+      root
+    )
+  );
+  const css = await fs.readFile(
+    new URL(
+      "test/fixtures/shell/topbar.918f2c1a3eaa24581dfb11b360b323fa925b5a2548108b6ad5d8bd98ff3cc23b.css",
+      root
+    )
+  );
+  const october = await fs.readFile(
+    new URL("test/fixtures/shell/topbar-2026-10-22.js", root)
+  );
+  assert.equal(topbar.length, 9981);
+  assert.equal(
+    createHash("sha256").update(topbar).digest("hex"),
+    "4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b"
+  );
+  assert.match(
+    topbar.toString("utf8"),
+    /topbar\.918f2c1a3eaa24581dfb11b360b323fa925b5a2548108b6ad5d8bd98ff3cc23b\.css/
+  );
+  assert.match(topbar.toString("utf8"), /const V=2/);
+  assert.doesNotMatch(topbar.toString("utf8"), /const V=3/);
+  assert.equal(css.length, 2807);
+  assert.equal(
+    createHash("sha256").update(css).digest("hex"),
+    "918f2c1a3eaa24581dfb11b360b323fa925b5a2548108b6ad5d8bd98ff3cc23b"
+  );
+  assert.equal(october.length, 5661);
+  assert.equal(
+    createHash("sha256").update(october).digest("hex"),
+    "26f17c2cc25ea8b4a98eedc01a330258bf0beec2f81a7e7adfd21b269b078c09"
+  );
+  const samples = [
+    ["/shutter/", "", "", "en"],
+    ["/shutter/", "", "", "zh"],
+    ["/shutter/en/", "", "#shot", "zh"],
+    ["/", "?lang=zh", "", "en"],
+    ["/", "", "#h", "en"],
+    ["/shutter/page", "?a=1", "#h", "en"],
+  ] as const;
+  for (const [pathname, search, hash, lang] of samples) {
+    assert.equal(
+      contractHref(pinned, pathname, search, hash, lang),
+      contractHref(vendor, pathname, search, hash, lang),
+      `${pathname} ${lang}`
+    );
+  }
+  for (const name of ["web/index.html", "web/en/index.html"]) {
+    const html = await fs.readFile(new URL(name, root), "utf8");
+    assert.match(
+      html,
+      /src="\/shell\/topbar\.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b\.js"/
+    );
+    assert.doesNotMatch(html, /src="\/shell\/(?:topbar|lang)\.js"/);
+    assert.doesNotMatch(html, /src="\/shell\/lang\.[0-9a-f]{64}\.js"/);
+  }
 });
 
 function contractWindow(

@@ -182,6 +182,7 @@ export function buildApp(opts: AppOptions = {}) {
           config.port
         );
         reply
+          .header("Cache-Control", "no-cache")
           .type("text/html; charset=utf-8")
           .send(fillPage(templateFor(lang), pageLinks(origin, mount, lang)));
       };

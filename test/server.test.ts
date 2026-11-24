@@ -113,7 +113,16 @@ test("GET /shutter/ -> 200 html with the product title", async () => {
   assert.match(res.body, /查看相机快门次数/);
   assert.match(
     res.body,
-    /<script src="\/shell\/topbar\.js" defer data-tool="shutter"><\/script>/
+    /<script src="\/shell\/topbar\.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b\.js" defer data-tool="shutter"><\/script>/
+  );
+  assert.doesNotMatch(res.body, /src="\/shell\/topbar\.js"/);
+  assert.doesNotMatch(res.body, /src="\/shell\/lang(?:\.[0-9a-f]{64})?\.js"/);
+  assert.equal(res.headers["cache-control"], "no-cache");
+  assert.equal(
+    (await app.inject({ method: "GET", url: "/shutter/api/health" })).headers[
+      "cache-control"
+    ],
+    undefined
   );
   assert.match(res.body, /<html lang="zh-CN"/);
   assert.doesNotMatch(res.body, /__SC_(?:MOUNT|CANONICAL|ZH|EN|SWITCH)__/);
@@ -173,6 +182,19 @@ test("english pages keep query, heads, and mount-rooted assets", async () => {
     });
     assert.equal(image.statusCode, 200, basePath);
     assert.equal(Buffer.from(image.rawPayload)[0], 0xff);
+    assert.notEqual(image.headers["cache-control"], "no-cache", basePath);
+    assert.equal(page.headers["cache-control"], "no-cache", basePath);
+    assert.equal(zh.headers["cache-control"], "no-cache", basePath);
+    assert.match(
+      page.body,
+      /<script src="\/shell\/topbar\.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b\.js" defer data-tool="shutter"><\/script>/
+    );
+    assert.match(
+      zh.body,
+      /<script src="\/shell\/topbar\.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b\.js" defer data-tool="shutter"><\/script>/
+    );
+    assert.doesNotMatch(page.body, /src="\/shell\/topbar\.js"/);
+    assert.doesNotMatch(zh.body, /src="\/shell\/topbar\.js"/);
     const nested = await app.inject({
       method: "GET",
       url: `${prefix}/en/iphone-export-original.jpg`,

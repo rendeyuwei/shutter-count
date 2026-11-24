@@ -72,9 +72,9 @@ npm start
 
 共享契约是 [rende-site `src/shell/lang.ts`](https://github.com/rendeyuwei/rende-site/blob/64701ced2b3e495f8e5237148096a5a665e41c17/src/shell/lang.ts) 的 `window.rfLang`（`v` 为 1）。判定顺序：`en/` 是英文，无前缀 URL 上的 `?lang=zh` 是中文；否则使用手选偏好 `rf-lang`（先 `localStorage`，存储抛错时用同名 cookie）；否则取 `navigator.languages` 里第一个 `zh*` 或 `en*`（`zh-HK`、`zh-TW` 都算中文）；否则英文。只有点击语言开关才写入偏好。无前缀页面仅在选择了英文、且页面声明了 `<link rel="alternate" hreflang="en">` 时跳到对应 `en/`。英文页不会再跳，因此不会循环。查询字符串和 hash 会保留。
 
-两份 HTML 都设置 `lang`、指向自己的 canonical，以及 `zh-CN`、`en`、`x-default`（英文）的 `hreflang`。判定脚本内联在 `<head>` 中，位于统计脚本之前。契约里的站点前缀与当前进程挂载一致时（`/shutter/` 或 `/`）直接调用它的 `enter()`。其他挂载使用同一套判定，但 URL 按挂载计算，因为契约表不认识那些前缀。本页不改写 `place()` 或 `href()`。图标、样式和脚本使用挂载绝对路径。`<head>` 保留 v1 副本，供最早的语言判定使用。是否派发 `rf:locale` 看 `rfLang.v >= 2`，不卡在 v1。共享顶栏来自 rende-site `09687c36`（已合并为 `2edd7d4`），加载后是 v2：页面声明 `<meta name="rf-mount">`，同页切换时先 `pushState` 并更新本页元数据，再 `choose` 并派发 `rf:locale`，顶栏自己整栏刷新。前进后退不写偏好。工具的 `en` 仍为 false。没有这版顶栏时，页内开关仍能在内存里换结果。照片不会再存一次或再上传一次。
+两份 HTML 都设置 `lang`、指向自己的 canonical，以及 `zh-CN`、`en`、`x-default`（英文）的 `hreflang`。判定脚本内联在 `<head>` 中，位于统计脚本之前。契约里的站点前缀与当前进程挂载一致时（`/shutter/` 或 `/`）直接调用它的 `enter()`。其他挂载使用同一套判定，但 URL 按挂载计算，因为契约表不认识那些前缀。本页不改写 `place()` 或 `href()`。图标、样式和脚本使用挂载绝对路径。`<head>` 保留 v1 副本，供最早的语言判定使用。在 `/` 和 `/shutter/` 上，它的 `href()` 与钉住的 lang 一致，所以判定不变。页面不请求 `/shell/lang.js`。是否派发 `rf:locale` 看 `rfLang.v >= 2`。两份页面都加载 `/shell/topbar.4a304e017601ad56e80a5c39886c186fa462161ce585d093ae92c4cfc17edd7b.js`（`data-tool="shutter"`）。这个名字是 rende-site `fdaa701` 的不可变文件，不是页面地址上的 query，`v` 仍是 2。顶栏会换掉内联副本，并且不调用 `enter()`。页面声明 `<meta name="rf-mount">`，同页切换时先 `pushState` 并更新本页元数据，再 `choose` 并派发 `rf:locale`，顶栏自己整栏刷新。前进后退不写偏好。HTML 响应带 `Cache-Control: no-cache`。接口和图片的缓存不变。没有这版顶栏时，页内开关仍能在内存里换结果。照片不会再存一次或再上传一次。
 
-这里复制的契约仍是 `shutter.en: false`。快门页面自己已经声明 `hreflang`，所以可以切换语言。主站英文首页和工具菜单在 `src/shell/lang.ts` 把该标志改为 `true` 并重新发布之前，仍会链到中文 `/shutter/`。本仓库不修改那个文件，也不改生产环境。
+这里复制的契约仍是 `shutter.en: false`。钉住的顶栏表里 easypic、shutter、recipes 的 `en` 已是 `true`，所以英文页的菜单会链到各工具的 `/en/`。本仓库不改那张表，也不改生产环境。
 
 ## 测试
 
